@@ -11,7 +11,7 @@ This guide walks you through setting up TrajGRN-Bench on your machine.
 ## Step 1: Clone the Repository
 
 ```bash
-git clone https://github.com/YOUR_ORG/TrajGRN-Bench.git
+git clone https://github.com/YannMauge/TrajGRN-Bench.git
 cd TrajGRN-Bench
 ```
 

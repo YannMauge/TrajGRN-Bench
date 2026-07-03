@@ -139,7 +139,7 @@ environment. Run the entrypoint script directly for debugging.
 
 ## Still Stuck?
 
-- Check existing [GitHub Issues](https://github.com/YOUR_ORG/TrajGRN-Bench/issues)
+- Check existing [GitHub Issues](https://github.com/YannMauge/TrajGRN-Bench/issues)
 - Open a new issue with:
     - Full error message
     - Your config file (sanitized)

@@ -23,7 +23,7 @@ Usage:
 
     # Look up a single method
     method = get_method("FLeCS")
-    print(method["entrypoint"]["script"])   # methods/flecs/flecs_train.py
+    print(method["entrypoint"]['script'])   # methods/flecs/flecs_train.py
 
     # Get capabilities as a dict (for ranking_table.py)
     caps = get_capabilities_table()         # {name: {grn_inference: True, ...}}
