@@ -1,88 +1,80 @@
 # TrajGRN-Bench: Trajectory and Gene Regulatory Network Inference Benchmark
 
-**TrajGRN-Bench** is a comprehensive benchmark of mechanistic models for joint gene regulatory network (GRN) and single-cell RNA-seq trajectory inference. We evaluate and compare multiple joint-inference approaches alongside complementary GRN and trajectory methods on simulated datasets. 
+**TrajGRN-Bench** is a comprehensive benchmark of mechanistic models for **joint gene regulatory network (GRN) and single-cell RNA-seq trajectory inference**. We evaluate and compare multiple joint-inference approaches alongside complementary GRN and trajectory methods on simulated datasets.
 
-We use :
-- Standardized metrics for GRN and trajectory inference.
-- A flexible configuration system to run different methods and metrics on different datasets.
-- Docker-based execution for repeatable runs across different computational environments.
+## Key Features
 
-See [METHODS.md](METHODS.md) for a concise list of included methods and their DOI, GitHub links, and short descriptions.
+- **Standardized metrics** — Unified metrics for GRN inference (AUROC, AUPRC, etc.) and trajectory reconstruction (Wasserstein, EMD, etc.).
+- **Flexible configuration** — A single YAML config drives methods, datasets, metrics, and output layout.
+- **Docker-based execution** — Each method runs in its own container for reproducible, conflict-free runs.
+- **Interactive rankings** — Auto-generated ranking tables and plots for exploring method performance.
 
-## Installation
+## Documentation
 
-### Default setup (Docker method execution)
+Full documentation is available at the [TrajGRN-Bench docs site](https://yannmauge.github.io/TrajGRN-Bench/) (or build locally with `mkdocs serve`).
 
-This repository now defaults to **Docker-based method execution** to avoid installing
-multiple method-specific conda environments. You only need a single runner environment
-to orchestrate simulations and metrics.
+| Section | Description |
+|---|---|
+| [Installation](docs/install.md) | Prerequisites, runner env setup, and container builds |
+| [User Guide](docs/usage.md) | Running benchmarks, configuration, and understanding results |
+| [Methods](docs/methods.md) | Overview of all included methods, capabilities, and I/O specification |
+| [Results](docs/results.md) | Results gallery and interactive rankings |
+| [Developer Guide](docs/development.md) | Adding methods, datasets, and extending the benchmark |
+| [FAQ](docs/faq.md) | Troubleshooting and common questions |
+| [Contributing](docs/contributing.md) | How to contribute |
 
-1. Install Docker.
-2. Create the runner environment:
-```
-conda env create -f ./environments/benchmark_runner.yml
-```
-3. Build the method images (see `containers/README.md` for full examples):
-```
-docker build -f containers/docker/Dockerfile --build-arg ENV_FILE=environments/flecs_cpu.yml --build-arg ENV_NAME=flecs -t benchmark/flecs:latest .
-docker build -f containers/docker/Dockerfile --build-arg ENV_FILE=environments/sc_dynamic.yml --build-arg ENV_NAME=sc_dynamic -t benchmark/scnode:latest .
-docker build -f containers/docker/Dockerfile --build-arg ENV_FILE=environments/reference_fitting.yml --build-arg ENV_NAME=reference_fitting -t benchmark/referencefitting:latest .
-docker build -f containers/docker/Dockerfile --build-arg ENV_FILE=environments/cardamom_ot.yml --build-arg ENV_NAME=cardamom_env -t benchmark/cardamomot:latest .
-```
+## Quick Start
 
-Run the benchmark (default):
-```
+```bash
+# 1. Create the runner environment
+conda env create -f environments/benchmark_runner.yml
+
+# 2. Build method Docker images
+make -f containers/Makefile -j4 all
+
+# 3. Run the benchmark
 bash benchmark_run.sh --config configs/benchmark.example.yaml
 ```
 
-### Optional: method conda environments (legacy)
+Outputs are written to `benchmark/outputs_methods/` and `benchmark/outputs_metrics/`.
 
-If you prefer local conda environments instead of containers, create the method envs:
+> See the [Installation guide](docs/install.md) for detailed setup instructions, including optional conda-based execution.
 
-If you have a GPU and want to run on GPU:
-```
-conda env create -f ./environments/cardamom_ot.yml
-conda env create -f ./environments/sc_dynamic.yml
-conda env create -f ./environments/reference_fitting.yml
-conda env create -f ./environments/flecs_gpu.yml
-```
+## Methods Included
 
-Outputs will be found in './benchmark/outputs_methods/' and './benchmark/outputs_metrics/'
+| Method | Type | Reference |
+|---|---|---|
+| CardamotOT | GRN + Trajectory | [bioRxiv 2026](https://doi.org/10.64898/2026.03.31.715390) |
+| FLeCS | GRN + Trajectory | [arXiv:2503.20027](https://arxiv.org/abs/2503.20027) |
+| Reference Fitting | GRN + Trajectory | [arXiv:2409.06879](https://arxiv.org/abs/2409.06879) |
+| RENGE | GRN (perturbation-aware) | [Comm Biol 2023](https://doi.org/10.1038/s42003-023-05594-4) |
+| scNODE | Trajectory (VAE+NeuralODE) | [bioRxiv 2023](https://doi.org/10.1101/2023.11.22.568346) |
+| TrajectoryNet | Trajectory (CNF/OT) | [ICML 2020](https://arxiv.org/abs/2002.04461) |
+| GENIE3 | GRN (baseline) | [PLoS ONE 2010](https://doi.org/10.1371/journal.pone.0012776) |
+| Pearson | GRN (baseline) | Coexpression baseline |
+| Waddington-OT | Trajectory (OT) | [Cell 2019](https://doi.org/10.1016/j.cell.2019.01.006) |
 
-The example config defaults to Docker runners (`execution.default_runner: docker`).
-If you want to use conda environments, set `execution.default_runner: conda` and
-fill `execution.conda_envs` in your config.
+See [METHODS.md](METHODS.md) for full details, DOIs, and GitHub links.
 
-You can also invoke the config runner directly:
-
-```
-conda run -n benchmark_runner python benchmark_run_config.py --config configs/benchmark.example.yaml
-```
-
-## Repository structure
+## Repository Structure
 
 ```
 .
-├── benchmark_run.sh              # Main entrypoint (supports --config)
-├── benchmark_run.py              # Benchmark orchestration logic
+├── benchmark_run.sh / .py        # Main benchmark entrypoints
 ├── benchmark_run_config.py       # Config-driven runner
-├── compute_metrics.py            # Metrics orchestration
-├── single_run.sh                 # Runs a single inference run
-├── visualize_cells.py            # Cell-level metric plots
-├── visualize_grn.py              # GRN-level metric plots
-├── metrics_cells.py              # Cell-level metrics
-├── metrics_grn.py                # GRN-level metrics
-├── ranking_table.py              # Ranking table based on metrics
-├── README.md
-├── benchmark/
-│   ├── data/                     # Benchmark inputs
-│   ├── outputs_methods/          # Method outputs (GRNs, adatas, etc.)
-│   └── outputs_metrics/          # Metrics outputs
-├── configs/                      # Benchmark configs and schema
+├── single_run.sh                 # Single replicate / modality runner
+├── ranking_table.py              # Method ranking generation
+├── configs/                      # YAML config files and JSON schema
 ├── containers/                   # Docker/Apptainer build recipes
-├── environments/                 # Conda environment files
-├── methods/                      # Methods used in the benchmark
-├── simulator/                    # Simulation drivers and utilities
-└── utils/
-    └── utils.py
+├── environments/                 # Conda environment YAMLs
+├── methods/                      # Per-method inference scripts
+├── simulator/                    # Simulation drivers (SERGIO, Harissa, BoolODE)
+├── post_analysis/                # Metrics computation and visualizations
+├── utils/                        # Shared utilities and registry
+├── docs/                         # Documentation (MkDocs Material site)
+└── benchmark/
+    ├── data/                     # Input datasets (.h5ad)
+    ├── outputs_methods/          # Method inference outputs
+    └── outputs_metrics/          # Computed metrics
 ```
+

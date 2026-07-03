@@ -15,8 +15,9 @@ on:
       - ".github/workflows/deploy-docs.yml"
   workflow_dispatch: # Allow manual trigger
 
+# Grant the deployment job GITHUB_TOKEN the needed permissions
 permissions:
-  contents: write
+  contents: read
   pages: write
   id-token: write
 
@@ -25,7 +26,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build-and-deploy:
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -45,13 +46,20 @@ jobs:
             mkdocs-gen-files pyyaml pandas tabulate
 
       - name: Build docs
-        run: mkdocs build
+        run: mkdocs build --strict
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v4
-        if: github.ref == 'refs/heads/main'
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./site
-          force_orphan: true
-          commit_message: "docs: deploy documentation [skip ci]"
+          path: ./site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

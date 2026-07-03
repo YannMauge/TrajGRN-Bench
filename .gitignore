@@ -7,3 +7,4 @@ simulator/custom_network/Data/*
 *log
 *.DS_Store
 site/
+plan.md
