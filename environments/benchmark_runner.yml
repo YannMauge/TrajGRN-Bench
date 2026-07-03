@@ -1,0 +1,28 @@
+name: benchmark_runner
+channels:
+  - conda-forge
+  - defaults
+  - pyg
+  - pytorch
+  - bioconda
+dependencies:
+  - python=3.10
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - scanpy
+  - anndata
+  - matplotlib
+  - seaborn
+  - umap-learn
+  - jq
+  - pyyaml
+  - pot
+  - notebook
+  - pip:
+      - numpy
+      - harissa==3.0.8
+      - geomloss
+      - scvelo

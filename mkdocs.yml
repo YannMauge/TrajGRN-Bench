@@ -1,0 +1,139 @@
+# =============================================================================
+# MkDocs Configuration — TrajGRN-Bench Documentation
+# =============================================================================
+site_name: TrajGRN-Bench
+site_description: >
+  A comprehensive benchmark of mechanistic models for joint gene regulatory
+  network (GRN) and single-cell RNA-seq trajectory inference.
+site_author: TrajGRN-Bench Team
+repo_url: https://github.com/YannMauge/TrajGRN-Bench
+repo_name: TrajGRN-Bench
+edit_uri: edit/main/docs/
+
+# ── Theme ────────────────────────────────────────────────────────────────────
+theme:
+  name: material
+  palette:
+    # Light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    # Dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: teal
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.expand
+    - navigation.indexes
+    - navigation.top
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+  icon:
+    repo: material/github
+
+# ── Plugins ──────────────────────────────────────────────────────────────────
+plugins:
+  - search
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          paths: [.]
+          options:
+            show_source: true
+            show_root_heading: true
+            show_category_heading: true
+            docstring_style: google
+            show_if_no_docstring: false
+            filters:
+              - "!^_"
+            heading_level: 2
+  - gen-files:
+      scripts:
+        - docs/_scripts/generate_results.py
+        - docs/_scripts/generate_methods.py
+
+exclude_docs: |
+  results_data/README.md
+  methods_capabilities.md
+  methods_descriptions.md
+  methods_glance_table.md
+
+# ── Extensions ───────────────────────────────────────────────────────────────
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path:
+        - docs
+      check_paths: false
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.arithmatex:
+      generic: true
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+# ── Extra CSS / JS ───────────────────────────────────────────────────────────
+extra_css:
+  - assets/extra.css
+
+extra_javascript:
+  - assets/extra.js
+  - https://cdn.plot.ly/plotly-2.32.0.min.js
+
+# ── Navigation ───────────────────────────────────────────────────────────────
+nav:
+  - Home: index.md
+  - Installation: install.md
+  - User Guide:
+      - Running Benchmarks: usage.md
+      - Configuration: usage_config.md
+      - Understanding Results: usage_results.md
+  - Methods:
+      - Overview: methods.md
+      - Method I/O Specification: methods_io.md
+  - Results & Rankings:
+      - Results Gallery: results.md
+  - Developer Guide:
+      - Overview: development.md
+      - Adding a Method: development_add_method.md
+      - Adding a Dataset: development_add_dataset.md
+      - Methods Registry: development_registry.md
+  - API Reference:
+      - Overview: api/index.md
+      - utils: api/utils.md
+      - post_analysis: api/post_analysis.md
+  - Contributing: contributing.md
+  - FAQ & Troubleshooting: faq.md
+
+# ── Extra ────────────────────────────────────────────────────────────────────
+extra:
+  social:
+    - icon: material/github
+      link: https://github.com/YannMauge/TrajGRN-Bench
+  analytics: {}

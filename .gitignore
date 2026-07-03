@@ -1,0 +1,9 @@
+benchmark/data/data*
+benchmark/outputs_methods/*
+benchmark/outputs_metrics/*
+simulator/custom_network/Data/*
+*__pycache__*
+*.ipynb_checkpoints
+*log
+*.DS_Store
+site/

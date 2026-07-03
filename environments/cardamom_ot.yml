@@ -1,0 +1,26 @@
+name: cardamom_env
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12
+  - pip
+  - numpy
+  - scipy
+  - anndata
+  - scikit-learn
+  - matplotlib
+  - pandas
+  - joblib
+  - pip:
+    - numba
+    - alive-progress
+    - harissa
+    - torch
+    - umap-learn
+    - torchdiffeq
+    - pot
+    - questionary
+    - pyyaml
+    - scanpy
+    - scvelo

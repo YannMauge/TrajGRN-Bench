@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Benchmark runner config",
+  "type": "object",
+  "required": ["benchmark"],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "paths": {
+      "type": "object",
+      "properties": {
+        "input_dir": { "type": "string" },
+        "adata_dir": { "type": "string" },
+        "results_dir": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "simulation": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["simul_replicates", "simul_ko", "false"]
+        },
+        "replicates_number": { "type": "integer", "minimum": 1 },
+        "simulator_backend": { "type": "string", "enum": ["harissa", "boolode", "sergio"] },
+        "simul_ko_genes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "benchmark": {
+      "type": "object",
+      "required": ["train_data", "output_mode", "global_run_name", "run_methods"],
+      "properties": {
+        "train_data": {
+          "type": "string",
+          "enum": ["full", "future", "leave-one-out", "subsample_full"]
+        },
+        "output_mode": {
+          "type": "string",
+          "enum": ["full_full", "full_train", "full_test", "no_traj"]
+        },
+        "global_run_name": { "type": "string" },
+        "future_start_tp": { "type": "integer", "minimum": 0 },
+        "ko_output_genes": { "type": "string" },
+        "restart_mode": {
+          "type": "string",
+          "enum": ["save", "rerun"],
+          "default": "save",
+          "description": "save: skip methods that already have a .done marker; rerun: re-run all methods and overwrite saved files"
+        },
+        "perturbation_training": {
+          "anyOf": [
+            { "type": "boolean" },
+            { "type": "integer", "enum": [0, 1] },
+            { "type": "string", "enum": ["0", "1", "true", "false", "yes", "no"] }
+          ]
+        },
+        "run_methods": {
+          "type": "object",
+          "description": "Which methods to run. Method names are defined in methods_registry.yaml.",
+          "propertyNames": {
+            "enum": [
+              "FLeCS", "FLeCS-TPs", "scNODE", "reference_fitting",
+              "CardamomOT", "GENIE3", "PEARSON", "RENGE",
+              "TrajectoryNet", "WaddingtonOT"
+            ]
+          },
+          "additionalProperties": {
+            "anyOf": [
+              { "type": "boolean" },
+              { "type": "integer", "enum": [0, 1] },
+              { "type": "string", "enum": ["0", "1", "true", "false"] }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "properties": {
+        "runner_env": { "type": "string" },
+        "default_runner": { "type": "string", "enum": ["conda", "docker", "apptainer"] },
+        "method_runners": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["conda", "docker", "apptainer"]
+          }
+        },
+        "conda_envs": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "container_engine": {
+          "type": "string",
+          "enum": ["docker", "apptainer"]
+        },
+        "container_images": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

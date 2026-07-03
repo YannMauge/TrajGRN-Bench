@@ -1,0 +1,21 @@
+name: trajectorynet
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - pip
+  - python>=3.8
+  - pytorch
+  - numpy
+  - scipy
+  - matplotlib
+  - scikit-learn
+  - libgomp
+  - pot
+  - scanpy>=1.9,<1.10
+  - anndata
+  - pip:
+    - torchdiffeq
+    - TrajectoryNet
+    - wot

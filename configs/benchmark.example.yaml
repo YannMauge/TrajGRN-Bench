@@ -1,0 +1,66 @@
+# train_data: Defines the training data given to methods. One of:
+#   - full          : train on all timepoints
+#   - future        : train on only the first x timepoints
+#   - leave-one-out : leave one intermediate timepoint out as test; run all combinations
+#   - subsample_full: all timepoints but only 66% of cells at each timepoint
+#
+# output_mode: Defines the output simulated set. One of:
+#   - full_full  : simulate all train and test timepoints from the first timepoint
+#                  (when train_data==subsample_full, t0 is also in the test set)
+#   - full_train : simulate all training timepoints from the first timepoint
+#   - full_test  : simulate all test timepoints from the last timepoint before test
+#   - no_traj    : do not output simulation
+#
+# simulation: "simul_replicates" for replicates, "simul_ko" for knockout, "false" for existing data
+# simulator_backend: "harissa" (default), "boolode", or "sergio"
+# global_run_name: Name for the benchmark run
+# run_methods_json: JSON object specifying which methods to run
+# future_start_tp: Timepoint to start future prediction (for future train_data only)
+# replicates_number: Number of simulation runs/replicates when simulating data
+# ko_output_genes: KO target list for output simulation ("none", "all", or comma-separated genes; default: none)
+# =============================================================================
+schema_version: 1
+
+paths:
+  input_dir: simulator/custom_network/Data
+  adata_dir: benchmark/data
+  results_dir: benchmark/outputs_methods
+
+simulation:
+  mode: simul_replicates
+  replicates_number: 2
+  simulator_backend: harissa
+  simul_ko_genes: all
+
+benchmark:
+  train_data: future
+  output_mode: full_test
+  global_run_name: run_config_test
+  future_start_tp: 8
+  ko_output_genes: none
+  restart_mode: save
+  perturbation_training: false
+  run_methods:
+    FLeCS: false
+    FLeCS-TPs: true
+    scNODE: true
+    reference_fitting: true
+    CardamomOT: true
+    GENIE3: true
+    PEARSON: true
+    RENGE: true
+    TrajectoryNet: true
+    WaddingtonOT: true
+
+# Execution settings: conda envs, container images, and runner modes are now
+# defined in methods_registry.yaml.  You only need to list overrides here.
+# Omitted keys fall back to the registry defaults.
+execution:
+  runner_env: benchmark_runner
+  # default_runner: conda          # override the default runner
+  # conda_envs:                    # override per-method conda envs
+  #   FLeCS: my_custom_flecs_env
+  # container_images:              # override per-method container images
+  #   scNODE: myrepo/scnode:latest
+  # method_runners:                # override per-method runner
+  #   reference_fitting: docker

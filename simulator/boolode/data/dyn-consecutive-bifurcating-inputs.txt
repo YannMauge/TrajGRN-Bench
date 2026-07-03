@@ -1,0 +1,2 @@
+Input	Value
+g1	1

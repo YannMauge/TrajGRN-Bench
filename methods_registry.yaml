@@ -1,0 +1,321 @@
+# =============================================================================
+# methods_registry.yaml — Single source of truth for all method metadata.
+# =============================================================================
+# When adding a new method, you only need to add one entry here.  All the
+# downstream consumers (shell scripts, Python tools, config schema, container
+# build system, documentation) derive their data from this file.
+#
+# Consumers:
+#   utils/methods_registry.py   → Python importable API
+#   single_run.sh               → BENCHMARK_METHODS_REGISTRY env var (JSON)
+#   benchmark_run.sh            → default enabled-methods list
+#   ranking_table.py            → capabilities table
+#   configs/benchmark.example.yaml / schema → auto-populated
+#   containers/Makefile         → image build targets
+#   containers/build_all.sh     → image build targets
+#   METHODS.md                  → (optional) auto-generated docs
+# =============================================================================
+
+schema_version: 1
+
+# ── Methods ──────────────────────────────────────────────────────────────────
+# Keys are the canonical short name used everywhere (env vars, JSON, CLI).
+methods:
+
+  FLeCS:
+    display_name: FLeCS
+    description: >
+      Functional and Learnable Cell dynamicS — a scalable
+      gene-network-based differential-equation model that incorporates
+      network structure to infer regulatory dynamics and simulate
+      single-cell trajectories.
+    github: https://github.com/Bertinus/FLeCS
+    publication: "arXiv:2503.20027 (2025)"
+    # ── Entrypoint ──────────────────────────────────────────────────────
+    entrypoint:
+      type: python                              # python | bash
+      script: methods/flecs/flecs_train.py
+      pass_output_mode: true
+      pass_ko_genes: true
+      supports_perturbation_training: false
+      extra_args:
+        - "--path_strategy"
+        - "knn"
+    # ── Execution environment ───────────────────────────────────────────
+    execution:
+      default_runner: docker
+      conda_env: flecs
+      container:
+        image: benchmark/flecs:latest
+        env_file: environments/flecs_cpu.yml
+        env_name: flecs
+    # ── Capabilities ────────────────────────────────────────────────────
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: true
+      perturbation_training: false
+
+  FLeCS-TPs:
+    display_name: FLeCS-TPs
+    description: >
+      FLeCS variant that forces timepoint alignment during training.
+    github: https://github.com/Bertinus/FLeCS
+    publication: "arXiv:2503.20027 (2025)"
+    entrypoint:
+      type: python
+      script: methods/flecs/flecs_train.py
+      pass_output_mode: true
+      pass_ko_genes: true
+      supports_perturbation_training: false
+      extra_args:
+        - "--path_strategy"
+        - "force_timepoints"
+    execution:
+      default_runner: docker
+      conda_env: flecs
+      container:
+        image: benchmark/flecs:latest
+        env_file: environments/flecs_cpu.yml
+        env_name: flecs
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: true
+      perturbation_training: false
+
+  scNODE:
+    display_name: scNODE
+    description: >
+      A VAE + Neural ODE generative model that learns continuous-time
+      dynamics on a latent manifold to predict and simulate single-cell
+      transcriptomic trajectories.
+    github: https://github.com/rsinghlab/scNODE
+    publication: "bioRxiv 2023 DOI:10.1101/2023.11.22.568346"
+    entrypoint:
+      type: python
+      script: methods/scnode/scnode.py
+      pass_output_mode: true
+      pass_ko_genes: false
+      supports_perturbation_training: false
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: sc_dynamic
+      container:
+        image: benchmark/scnode:latest
+        env_file: environments/sc_dynamic.yml
+        env_name: sc_dynamic
+    capabilities:
+      grn_inference: false
+      trajectory_reconstruction: true
+      perturbation_training: false
+
+  reference_fitting:
+    display_name: Reference Fitting
+    description: >
+      Joint trajectory and network inference via reference fitting;
+      leverages dynamical and perturbational single-cell data to jointly
+      infer trajectories and directed/signed networks using min-entropy
+      estimation.
+    github: https://github.com/zsteve/referencefitting
+    publication: "arXiv:2409.06879 (2024)"
+    entrypoint:
+      type: python
+      script: methods/referencefitting/notebooks/ref_fit.py
+      pass_output_mode: true
+      pass_ko_genes: true
+      supports_perturbation_training: true
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: reference_fitting
+      container:
+        image: benchmark/referencefitting:latest
+        env_file: environments/reference_fitting.yml
+        env_name: reference_fitting
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: true
+      perturbation_training: true
+
+  CardamomOT:
+    display_name: CardamomOT
+    description: >
+      Mechanistic GRN inference that fits stochastic models to time-course
+      scRNA-seq and then simulates the calibrated model. Designed to
+      produce interpretable kinetic parameters and synthetic trajectories
+      for benchmarking.
+    github: https://github.com/eliasventre/CardamomOT
+    publication: "bioRxiv (2026) DOI:10.64898/2026.03.31.715390"
+    entrypoint:
+      type: bash
+      script: methods/CardamomOT/run_carda_benchmark.sh
+      pass_output_mode: true
+      pass_ko_genes: true
+      supports_perturbation_training: true
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: cardamom_env
+      container:
+        image: benchmark/cardamomot:latest
+        env_file: environments/cardamom_ot.yml
+        env_name: cardamom_env
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: true
+      perturbation_training: true
+
+  GENIE3:
+    display_name: GENIE3
+    description: >
+      Tree-ensemble regression approach (Random Forests) for gene
+      regulatory network inference from expression data; widely used
+      baseline for GRN reconstruction.
+    github: https://github.com/aertslab/GENIE3
+    publication: "PLoS ONE (2010) DOI:10.1371/journal.pone.0012776"
+    entrypoint:
+      type: python
+      script: methods/genie3/GENIE3_python/GENIE3_ontrain.py
+      pass_output_mode: false
+      pass_ko_genes: false
+      supports_perturbation_training: false
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: cardamom_env
+      container:
+        image: benchmark/cardamomot:latest
+        env_file: environments/cardamom_ot.yml
+        env_name: cardamom_env
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: false
+      perturbation_training: false
+
+  PEARSON:
+    display_name: Pearson (coexpression)
+    description: >
+      Computes pairwise Pearson correlation between genes as a naive
+      GRN scoring baseline.
+    publication: "—"
+    entrypoint:
+      type: python
+      script: methods/pearson/inference_pearson.py
+      pass_output_mode: false
+      pass_ko_genes: false
+      supports_perturbation_training: false
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: cardamom_env
+      container:
+        image: benchmark/cardamomot:latest
+        env_file: environments/cardamom_ot.yml
+        env_name: cardamom_env
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: false
+      perturbation_training: false
+
+  RENGE:
+    display_name: RENGE
+    description: >
+      REgulatory Network inference using GEne perturbation data; infers
+      GRNs from time-series single-cell data using a kinetic model with
+      hyperparameter optimization. Optionally leverages CRISPR
+      perturbation (KO) data when available.
+    github: https://github.com/masastat/RENGE
+    publication: "Communications Biology (2023) DOI:10.1038/s42003-023-05594-4"
+    entrypoint:
+      type: python
+      script: methods/RENGE/inference_renge.py
+      pass_output_mode: true
+      pass_ko_genes: true
+      supports_perturbation_training: true
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: renge
+      container:
+        image: benchmark/renge:latest
+        env_file: environments/renge.yml
+        env_name: renge
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: true
+      perturbation_training: true
+
+  TrajectoryNet:
+    display_name: TrajectoryNet
+    description: >
+      Continuous normalizing-flow / optimal-transport-based model that
+      learns continuous paths between distributions for modeling cellular
+      dynamics and sampling predictions at arbitrary timepoints.
+    github: https://github.com/krishnaswamylab/TrajectoryNet
+    publication: "ICML 2020, arXiv:2002.04461"
+    entrypoint:
+      type: python
+      script: methods/TrajectoryNet/trajectorynet.py
+      pass_output_mode: true
+      pass_ko_genes: false
+      supports_perturbation_training: false
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: trajectorynet
+      container:
+        image: benchmark/trajectorynet:latest
+        env_file: environments/trajectorynet.yml
+        env_name: trajectorynet
+    capabilities:
+      grn_inference: false
+      trajectory_reconstruction: true
+      perturbation_training: false
+
+  WaddingtonOT:
+    display_name: Waddington-OT
+    description: >
+      Optimal-transport-based approach (Waddington-OT) that computes
+      transport maps between timepoints and interpolates gene-expression
+      clouds to reconstruct trajectories.
+    github: https://github.com/broadinstitute/wot
+    publication: "Cell (2019) DOI:10.1016/j.cell.2019.01.006"
+    entrypoint:
+      type: python
+      script: methods/wot/waddington_ot.py
+      pass_output_mode: true
+      pass_ko_genes: false
+      supports_perturbation_training: false
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: trajectorynet
+      container:
+        image: benchmark/trajectorynet:latest
+        env_file: environments/trajectorynet.yml
+        env_name: trajectorynet
+    capabilities:
+      grn_inference: false
+      trajectory_reconstruction: true
+      perturbation_training: false
+
+# ── Default execution settings ───────────────────────────────────────────────
+defaults:
+  execution:
+    runner: conda                              # conda | docker | apptainer
+    conda_env: cardamom_env
+    container_engine: docker
+    container_image: benchmark/cardamom:latest
+
+# ── Iteration order (used by single_run.sh and benchmark_run.sh) ──────────────
+iteration_order:
+  - FLeCS
+  - FLeCS-TPs
+  - scNODE
+  - reference_fitting
+  - CardamomOT
+  - GENIE3
+  - PEARSON
+  - RENGE
+  - TrajectoryNet
+  - WaddingtonOT

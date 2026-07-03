@@ -1,0 +1,23 @@
+name: renge
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python>=3.13.2
+  - pip
+  - git
+  # renge's exact pinned dependencies (from conda to avoid source builds)
+  - numpy=2.2.3
+  - pandas=2.2.3
+  - scipy=1.15.2
+  - scikit-learn=1.6.1
+  - statsmodels=0.14.4
+  - jax=0.4.35
+  - optuna=4.2.1
+  - tqdm=4.67.1
+  # additional deps for the inference script
+  - scanpy
+  - anndata
+  - matplotlib
+  - pip:
+      - git+https://github.com/masastat/RENGE.git
