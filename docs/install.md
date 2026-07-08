@@ -111,5 +111,5 @@ Ensure you have the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacente
 ## Next Steps
 
 - [Run your first benchmark](usage.md)
-- [Understand the configuration](usage_config.md)
+- [Run benchmarks & understand results](usage.md)
 - [Explore available methods](methods.md)

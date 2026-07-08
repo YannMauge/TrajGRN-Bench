@@ -15,13 +15,20 @@ Full documentation is available at the [TrajGRN-Bench docs site](https://yannmau
 
 | Section | Description |
 |---|---|
-| [Installation](docs/install.md) | Prerequisites, runner env setup, and container builds |
-| [User Guide](docs/usage.md) | Running benchmarks, configuration, and understanding results |
-| [Methods](docs/methods.md) | Overview of all included methods, capabilities, and I/O specification |
-| [Results](docs/results.md) | Results gallery and interactive rankings |
-| [Developer Guide](docs/development.md) | Adding methods, datasets, and extending the benchmark |
-| [FAQ](docs/faq.md) | Troubleshooting and common questions |
-| [Contributing](docs/contributing.md) | How to contribute |
+| [Home](https://yannmauge.github.io/TrajGRN-Bench/) | Project overview and key features |
+| [Installation](https://yannmauge.github.io/TrajGRN-Bench/install/) | Prerequisites, runner env setup, and container builds |
+| [User Guide](https://yannmauge.github.io/TrajGRN-Bench/usage/) | Running benchmarks |
+| [Usage](https://yannmauge.github.io/TrajGRN-Bench/usage/) | Running benchmarks, configuration, and interpreting results |
+| [Methods Overview](https://yannmauge.github.io/TrajGRN-Bench/methods/) | All included methods and their capabilities |
+| [Method I/O](https://yannmauge.github.io/TrajGRN-Bench/methods_io/) | Input/output specification for methods |
+| [Results Gallery](https://yannmauge.github.io/TrajGRN-Bench/results/) | Interactive rankings and plots |
+| [Developer Guide](https://yannmauge.github.io/TrajGRN-Bench/development/) | Overview for contributors |
+| [Adding a Method](https://yannmauge.github.io/TrajGRN-Bench/development_add_method/) | Step-by-step method integration |
+| [Adding a Dataset](https://yannmauge.github.io/TrajGRN-Bench/development_add_dataset/) | Step-by-step dataset integration |
+| [Registry](https://yannmauge.github.io/TrajGRN-Bench/development_registry/) | Methods registry reference |
+| [API Reference](https://yannmauge.github.io/TrajGRN-Bench/api/) | Python API documentation |
+| [FAQ](https://yannmauge.github.io/TrajGRN-Bench/faq/) | Troubleshooting and common questions |
+| [Contributing](https://yannmauge.github.io/TrajGRN-Bench/contributing/) | How to contribute |
 
 ## Quick Start
 
@@ -38,7 +45,7 @@ bash benchmark_run.sh --config configs/benchmark.example.yaml
 
 Outputs are written to `benchmark/outputs_methods/` and `benchmark/outputs_metrics/`.
 
-> See the [Installation guide](docs/install.md) for detailed setup instructions, including optional conda-based execution.
+> See the [Installation guide](https://yannmauge.github.io/TrajGRN-Bench/install/) for detailed setup instructions, including optional conda-based execution.
 
 ## Methods Included
 
@@ -54,7 +61,7 @@ Outputs are written to `benchmark/outputs_methods/` and `benchmark/outputs_metri
 | Pearson | GRN (baseline) | Coexpression baseline |
 | Waddington-OT | Trajectory (OT) | [Cell 2019](https://doi.org/10.1016/j.cell.2019.01.006) |
 
-See [METHODS.md](METHODS.md) for full details, DOIs, and GitHub links.
+See the [Methods Overview](https://yannmauge.github.io/TrajGRN-Bench/methods/) on the docs site for full details, DOIs, and GitHub links.
 
 ## Repository Structure
 

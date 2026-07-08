@@ -7,29 +7,20 @@ metrics, and simulators.
 
 ```mermaid
 graph TD
-    A[benchmark_run.sh / benchmark_run_config.py] --> B{Methods Registry}
-    B --> C[Method Entrypoints]
-    C --> D1[FLeCS]
-    C --> D2[scNODE]
-    C --> D3[CardamomOT]
-    C --> D4[...]
-    D1 --> E[Method Outputs]
-    D2 --> E
-    D3 --> E
-    D4 --> E
-    E --> F[compute_metrics.py]
-    F --> G[GRN Metrics]
-    F --> H[Cell Metrics]
-    G --> I[ranking_table.py]
-    H --> I
-    I --> J[Ranking PNG + CSV]
+    benchmark_run.sh --> Method Entrypoints
+    Method Entrypoints --> FLeCS & scNODE & CardamomOT & ...
+    FLeCS & scNODE & CardamomOT & ... --> Method Outputs
+    Method Outputs --> compute_metrics.py
+    compute_metrics.py --> GRN Metrics & Cell Metrics
+    GRN Metrics & Cell Metrics --> ranking_table.py
+    ranking_table.py --> Ranking PNG + CSV
 ```
 
 ## Key Concepts
 
 ### Methods Registry
 
-The **single source of truth** for all method metadata is
+The canonical reference for all method metadata is
 `methods_registry.yaml` (in the repo root). Every downstream tool
 derives its configuration from this file:
 
@@ -92,3 +83,13 @@ Simulators generate synthetic scRNA-seq data for benchmarking. Located in
     [:fontawesome-solid-arrow-right: Read guide](development_registry.md)
 
 </div>
+
+## Contributing
+
+We welcome contributions! Here's how you can help improve TrajGRN-Bench:
+
+- **Add a Method** — Integrate a new GRN or trajectory inference method. See [Adding a Method](development_add_method.md).
+- **Add a Dataset** — Contribute a new benchmarking dataset. See [Adding a Dataset](development_add_dataset.md).
+- **Add a Metric** — Propose a new evaluation metric for GRN or trajectory quality.
+- **Report a Bug** — Open an issue with detailed reproduction steps.
+- **Improve Docs** — Fix typos, add examples, or clarify explanations.

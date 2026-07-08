@@ -40,7 +40,7 @@ Filter training data: `adata[adata.obs['timepoint'].isin(train_tps[:, 1])]`
 
 ## Required Outputs
 
-### `predicted_grn.csv` (if GRN-capable)
+### `data_x_GRN.npy` (if GRN-capable)
 
 $N \times N$ adjacency matrix with gene names as both row and column labels:
 
@@ -52,15 +52,14 @@ GeneC, 0.0, 0.2, 0.0
 ```
 
 - Values represent edge weights (positive = activation, negative = inhibition)
-- Must be symmetric? No — directed networks are allowed
 
-### `simulated_adata.h5ad` (if trajectory-capable)
+### `data_x_adata.h5ad` (if trajectory-capable)
 
 AnnData object with simulated expression in `.X`:
 
 ```python
 import scanpy as sc
-adata_sim = sc.read_h5ad("simulated_adata.h5ad")
+adata_sim = sc.read_h5ad("data_x_adata.h5ad")
 # adata_sim.X shape: [n_simulated_cells × n_genes]
 # adata_sim.obs should contain 'timepoint'
 ```
@@ -72,14 +71,6 @@ An empty file signaling successful completion:
 ```bash
 touch <output_dir>/.done
 ```
-
-## Optional Outputs
-
-| File | Description |
-|------|-------------|
-| `latent_representation/` | Method-specific latent embeddings |
-| `kinetic_parameters.csv` | Inferred kinetic rates per gene |
-| `*.png` | Diagnostic plots |
 
 ## Examples
 

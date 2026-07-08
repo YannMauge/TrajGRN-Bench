@@ -12,7 +12,7 @@ TrajGRN-Bench's Python API is organized into several modules:
 
 ### Methods Registry
 
-The central registry API — the single source of truth for all method metadata.
+The central registry API — the canonical reference for all method metadata.
 
 ```python
 from utils.methods_registry import get_registry, get_capabilities_table

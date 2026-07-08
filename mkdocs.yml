@@ -48,6 +48,8 @@ theme:
 # ── Plugins ──────────────────────────────────────────────────────────────────
 plugins:
   - search
+  - snippets:
+      base_path: ["."]
   - mkdocstrings:
       default_handler: python
       handlers:
@@ -112,8 +114,6 @@ nav:
   - Installation: install.md
   - User Guide:
       - Running Benchmarks: usage.md
-      - Configuration: usage_config.md
-      - Understanding Results: usage_results.md
   - Methods:
       - Overview: methods.md
       - Method I/O Specification: methods_io.md
@@ -128,7 +128,6 @@ nav:
       - Overview: api/index.md
       - utils: api/utils.md
       - post_analysis: api/post_analysis.md
-  - Contributing: contributing.md
   - FAQ & Troubleshooting: faq.md
 
 # ── Extra ────────────────────────────────────────────────────────────────────

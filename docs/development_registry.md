@@ -1,6 +1,6 @@
 # Methods Registry
 
-The `methods_registry.yaml` file is the **single source of truth** for all
+The `methods_registry.yaml` file is the canonical reference for all
 method metadata in TrajGRN-Bench. Every downstream consumer derives its
 configuration from this file.
 
