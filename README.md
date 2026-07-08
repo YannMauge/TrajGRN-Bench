@@ -28,7 +28,6 @@ Full documentation is available at the [TrajGRN-Bench docs site](https://yannmau
 | [Registry](https://yannmauge.github.io/TrajGRN-Bench/development_registry/) | Methods registry reference |
 | [API Reference](https://yannmauge.github.io/TrajGRN-Bench/api/) | Python API documentation |
 | [FAQ](https://yannmauge.github.io/TrajGRN-Bench/faq/) | Troubleshooting and common questions |
-| [Contributing](https://yannmauge.github.io/TrajGRN-Bench/contributing/) | How to contribute |
 
 ## Quick Start
 

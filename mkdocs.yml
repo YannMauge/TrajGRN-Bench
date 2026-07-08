@@ -103,6 +103,8 @@ extra_css:
   - assets/extra.css
 
 extra_javascript:
+  - assets/mathjax-config.js
+  - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
   - assets/extra.js
   - https://cdn.plot.ly/plotly-2.32.0.min.js
 
