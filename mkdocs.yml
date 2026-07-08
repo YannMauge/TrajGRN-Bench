@@ -48,8 +48,6 @@ theme:
 # ── Plugins ──────────────────────────────────────────────────────────────────
 plugins:
   - search
-  - snippets:
-      base_path: ["."]
   - mkdocstrings:
       default_handler: python
       handlers:
