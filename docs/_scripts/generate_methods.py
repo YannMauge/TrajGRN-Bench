@@ -194,7 +194,6 @@ def generate_descriptions(registry: dict) -> str:
         if result.endswith("---"):
             result = result[:-3].rstrip()
 
-    result += "\n\n*Auto-generated from `methods_registry.yaml`*\n"
     return result
 
 
@@ -222,7 +221,6 @@ def generate_capabilities_table(registry: dict) -> str:
         lines.append(f"| **{display}** | {grn} | {traj} | {pert} |")
 
     lines.append("")
-    lines.append("*Auto-generated from `methods_registry.yaml`*")
     return "\n".join(lines)
 
 
@@ -248,7 +246,6 @@ def generate_glance_table(registry: dict) -> str:
         lines.append(f"| **{display}** | {grn} | {traj} | {pert} |")
 
     lines.append("")
-    lines.append("*Auto-generated from `methods_registry.yaml`*")
     return "\n".join(lines)
 
 

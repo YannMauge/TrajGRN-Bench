@@ -160,7 +160,7 @@ validate_inputs() {
 _simulator_dir() {
     case "$simulator_backend" in
         boolode) echo "boolode" ;;
-        sergio)   echo "sergio" ;;
+        sergio)   echo "SERGIO" ;;
         *)        echo "Harissa" ;;
     esac
 }

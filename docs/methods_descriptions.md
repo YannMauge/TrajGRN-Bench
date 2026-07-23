@@ -2,29 +2,6 @@
 
 These methods jointly infer both the gene regulatory network and cellular trajectories from time-course scRNA-seq data.
 
-### FLeCS
-
-[:fontawesome-brands-github: Repository](https://github.com/Bertinus/FLeCS){ .md-button .md-button--primary }
-
-Functional and Learnable Cell dynamicS — a scalable gene-network-based differential-equation model that incorporates network structure to infer regulatory dynamics and simulate single-cell trajectories.
-
-- **Publication:** arXiv:2503.20027 (2025)
-- **GRN:** :material-check:{ .green } **Trajectory:** :material-check:{ .green } **Perturbation:** :material-close:{ .red }
-- **Variant:** `FLeCS-TPs`
-
----
-
-### FLeCS-TPs
-
-[:fontawesome-brands-github: Repository](https://github.com/Bertinus/FLeCS){ .md-button .md-button--primary }
-
-FLeCS variant that forces timepoint alignment during training.
-
-- **Publication:** arXiv:2503.20027 (2025)
-- **GRN:** :material-check:{ .green } **Trajectory:** :material-check:{ .green } **Perturbation:** :material-close:{ .red }
-
----
-
 ### Reference Fitting
 
 [:fontawesome-brands-github: Repository](https://github.com/zsteve/referencefitting){ .md-button .md-button--primary }
@@ -55,6 +32,29 @@ REgulatory Network inference using GEne perturbation data; infers GRNs from time
 
 - **Publication:** Communications Biology (2023) DOI:10.1038/s42003-023-05594-4
 - **GRN:** :material-check:{ .green } **Trajectory:** :material-check:{ .green } **Perturbation:** :material-check:{ .green }
+
+---
+
+### FLeCS
+
+[:fontawesome-brands-github: Repository](https://github.com/Bertinus/FLeCS){ .md-button .md-button--primary }
+
+Functional and Learnable Cell dynamicS — a scalable gene-network-based differential-equation model that incorporates network structure to infer regulatory dynamics and simulate single-cell trajectories.
+
+- **Publication:** arXiv:2503.20027 (2025)
+- **GRN:** :material-check:{ .green } **Trajectory:** :material-check:{ .green } **Perturbation:** :material-close:{ .red }
+- **Variant:** `FLeCS-TPs`
+
+---
+
+### FLeCS-TPs
+
+[:fontawesome-brands-github: Repository](https://github.com/Bertinus/FLeCS){ .md-button .md-button--primary }
+
+FLeCS variant that forces timepoint alignment during training.
+
+- **Publication:** arXiv:2503.20027 (2025)
+- **GRN:** :material-check:{ .green } **Trajectory:** :material-check:{ .green } **Perturbation:** :material-close:{ .red }
 
 ---
 
@@ -118,5 +118,3 @@ Optimal-transport-based approach (Waddington-OT) that computes transport maps be
 
 - **Publication:** Cell (2019) DOI:10.1016/j.cell.2019.01.006
 - **GRN:** :material-close:{ .red } **Trajectory:** :material-check:{ .green } **Perturbation:** :material-close:{ .red }
-
-*Auto-generated from `methods_registry.yaml`*

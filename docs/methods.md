@@ -9,8 +9,6 @@ deep learning, optimal transport, and classical baselines.
 
 ---
 
-## Capability Matrix
-
 <!-- This table is auto-generated from methods_registry.yaml -->
 <!-- See docs/_scripts/generate_methods.py -->
 

@@ -309,13 +309,13 @@ defaults:
 
 # ── Iteration order (used by single_run.sh and benchmark_run.sh) ──────────────
 iteration_order:
-  - FLeCS
-  - FLeCS-TPs
-  - scNODE
   - reference_fitting
   - CardamomOT
+  - RENGE
+  - FLeCS
+  - FLeCS-TPs
   - GENIE3
   - PEARSON
-  - RENGE
+  - scNODE
   - TrajectoryNet
   - WaddingtonOT

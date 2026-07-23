@@ -1,14 +1,12 @@
 | Method | GRN | Trajectory | Perturbations |
 |--------|:---:|:----------:|:-------------:|
-| **FLeCS** | ✅ | ✅ | — |
-| **FLeCS-TPs** | ✅ | ✅ | — |
-| **scNODE** | — | ✅ | — |
 | **Reference Fitting** | ✅ | ✅ | ✅ |
 | **CardamomOT** | ✅ | ✅ | ✅ |
+| **RENGE** | ✅ | ✅ | ✅ |
+| **FLeCS** | ✅ | ✅ | — |
+| **FLeCS-TPs** | ✅ | ✅ | — |
 | **GENIE3** | ✅ | — | — |
 | **Pearson (coexpression)** | ✅ | — | — |
-| **RENGE** | ✅ | ✅ | ✅ |
+| **scNODE** | — | ✅ | — |
 | **TrajectoryNet** | — | ✅ | — |
 | **Waddington-OT** | — | ✅ | — |
-
-*Auto-generated from `methods_registry.yaml`*

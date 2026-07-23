@@ -28,8 +28,8 @@ paths:
 
 simulation:
   mode: simul_replicates
-  replicates_number: 2
-  simulator_backend: harissa
+  replicates_number: 1
+  simulator_backend: sergio
   simul_ko_genes: all
 
 benchmark:
