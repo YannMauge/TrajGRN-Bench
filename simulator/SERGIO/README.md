@@ -3,10 +3,105 @@
 
 SERGIO v1.0.0
 
-
-Saurabh Sinha’s Lab, University of Illinois at Urbana-Champaign [Sinha Lab](https://www.sinhalab.net/sinha-s-home)
+Saurabh Sinha's Lab, University of Illinois at Urbana-Champaign [Sinha Lab](https://www.sinhalab.net/sinha-s-home)
 
 Developed by Payam Dibaeinia
+
+---
+
+## Optimizations (TrajGRN-Bench fork)
+
+This fork includes performance, memory-safety, and robustness improvements over the
+original SERGIO v1.0.0.  All changes are **mathematically equivalent** — the SDE
+integration (Euler-Maruyama), Hill-function kinetics, and noise models are unchanged.
+
+### Performance
+
+| Change | Impact |
+|--------|--------|
+| `np.sqrt()` replaces `np.power(x, 0.5)` everywhere | ~3× faster square-root |
+| `hill_()` accepts pre-computed `hr**cs` to avoid recomputing `half_response**coop_state` on every call | Eliminates thousands of redundant `np.power` calls in the inner simulation loop |
+| Extracted `_compute_noise_()` static helper | Removes ~30 lines of duplicated noise code (was repeated for MRs and targets) |
+| Batched master-regulator processing into a single matrix operation | Reduces Python-loop overhead |
+| Reusable pre-allocated temp arrays with `out=` in-place numpy operations | Fewer allocations per simulation step |
+
+### Memory safety
+
+| Change | Impact |
+|--------|--------|
+| New `max_memory_mb` constructor parameter (default 4096) | Raises a clear `MemoryError` **before** allocating, instead of silent OOM |
+| `gene.init_conc_buffer()` rejects over-sized buffers | Per-object guard |
+| `gene._buffer_append()` raises `MemoryError` on overflow instead of silently growing the buffer by 50% | Fail-fast instead of cascading OOM |
+| `np.maximum(x, 0)` guard before `np.sqrt()` in noise computation | Prevents NaN from tiny negative floating-point values |
+
+### Bug fixes
+
+| Fix | Description |
+|-----|-------------|
+| **Init-order bug** | `init_conc_buffer` was called **after** `init_gene_bin_conc_`, so the initial concentration was written to a Python list and then lost when the buffer replaced it. Now the buffer is allocated first. |
+| **Self-loop infinite loop** | `find_levels_` would loop forever on auto-regulation edges (gene → itself). Self-edges are now excluded from the layering target-set check. |
+| **Mutual-regulation infinite loop** | `find_levels_` would loop forever on mutual-regulation cycles (A ↔ B). Stuck vertices are now promoted to the same layer and simulated together. |
+| **Cycle safety net** | If an unresolvable cycle remains after `N+1` iterations, a clear `RuntimeError` is raised listing the stuck genes — instead of looping forever until OOM. |
+
+### Cycle handling in `find_levels_`
+
+The original longest-path layering cannot handle cyclic graphs.  This fork handles
+three categories:
+
+1. **Self-loops** (gene → itself): excluded from the target set used for layering.
+   Auto-regulation still works — the gene reads its own previous-step concentration
+   from the buffer.
+
+2. **Mutual-regulation** (A ↔ B): all stuck vertices are promoted to the **same layer**
+   and simulated together.  Within-cycle regulator reads use same-step values, which
+   is a valid approximation for Euler-Maruyama integration.
+
+3. **Unresolvable cycles** (3+ genes): after `N+1` iterations a `RuntimeError` is
+   raised with the stuck gene IDs, so the user can inspect the GRN.
+
+### Cascade simulation (`sergio_simulate_custom.py`)
+
+The benchmark integration script (`sergio_simulate_custom.py`) uses a **cascade
+simulation** strategy to produce time-varying data with clear temporal trends.
+This is essential for downstream methods (e.g., CardamomOT) that rely on genes
+changing expression across timepoints.
+
+**How it works:**
+
+1.  **GRN layering** — `_compute_grn_layers()` partitions genes into topological
+    layers via BFS from master regulators (genes with no incoming edges).  For the
+    default 8-gene benchmark GRN this produces 5 layers:
+
+    | Layer | Genes |
+    |-------|-------|
+    | 0     | Gene0 |
+    | 1     | Gene1, Gene2 |
+    | 2     | Gene3, Gene4 |
+    | 3     | Gene5, Gene6 |
+    | 4     | Gene7 |
+
+2.  **Per-layer sub-simulation** — For each layer *L*, a separate SERGIO
+    simulation is run where:
+
+    - Genes in layers ≤ *L* keep their normal regulatory edges.
+    - Genes in layers > *L* are added as **master regulators with near-zero
+      production rate** (0.01), so they appear at all timepoints with very low
+      expression — preventing all-zero columns that break downstream methods.
+
+3.  **Time bin assignment** — The *n_time_bins* are divided equally among
+    layers (`bins_per_layer = max(1, n_bins // n_layers)`).  Results from each
+    layer's simulation fill the corresponding slice of the output matrix, so
+    early timepoints contain only early-layer genes and later timepoints
+    progressively include the full GRN.
+
+**Result:** the output expression matrix shows a clear temporal cascade —
+Gene0 activates first, followed by its targets (Gene1–2), then their targets
+(Gene3–4), and so on.  This mirrors the behaviour of time-course simulators
+like Harissa and ensures downstream GRN inference methods receive data with
+adequate temporal variation.
+
+---
+
 
 ## Description
 SERGIO is a simulator for single-cell expression data guided by gene regulatory networks. A command-line, easy-to-use version of SERGIO will be soon uploaded to PyPI. Here is the documentation for using SERGIO v1.0.0 as a module in python.

@@ -12,13 +12,10 @@ def _write_ko_data_file(
     run_index: int,
     dataset_id: str,
     counts: np.ndarray,
-    n_time_bins: int,
+    time_vector: np.ndarray,
 ):
     n_genes, n_cells = counts.shape
-    edges = np.linspace(0, n_cells, n_time_bins + 1, dtype=int)
-    timepoints = np.zeros(n_cells, dtype=int)
-    for idx in range(n_time_bins):
-        timepoints[edges[idx] : edges[idx + 1]] = idx
+    timepoints = time_vector[:n_cells]
 
     data = np.zeros((n_cells + 1, n_genes + 2), dtype=int)
     data[0, 1:] = np.arange(n_genes + 1)
@@ -32,6 +29,7 @@ def main(argv):
     cfg = parse_common_cli(argv, include_ko=True, default_n_cells=1000, default_n_genes=8)
     cfg.output_folder.mkdir(parents=True, exist_ok=True)
     ko_labels = parse_ko_labels(cfg.ko_genes, cfg.gene_names)
+    time = cfg.build_time_vector(total_time=100)
 
     for run_index in range(1, cfg.n_runs + 1):
         print(f"Run {run_index}...")
@@ -47,12 +45,12 @@ def main(argv):
             degradation_rates=cfg.degradation_rates,
         )
         _write_true_network(cfg.output_folder, run_index, n_genes=wt_counts.shape[0])
-        _write_ko_data_file(cfg.output_folder, run_index, "WT", wt_counts, cfg.n_time_bins)
+        _write_ko_data_file(cfg.output_folder, run_index, "WT", wt_counts, time)
 
         for ko_label in ko_labels:
             ko_counts = wt_counts.copy()
             ko_counts[cfg.gene_names.index(ko_label), :] = 0
-            _write_ko_data_file(cfg.output_folder, run_index, ko_label, ko_counts, cfg.n_time_bins)
+            _write_ko_data_file(cfg.output_folder, run_index, ko_label, ko_counts, time)
 
 
 if __name__ == "__main__":

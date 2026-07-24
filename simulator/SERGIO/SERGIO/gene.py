@@ -23,8 +23,59 @@ class gene(object):
         self.converged_S_ = False
         self.ss_U_ = 0 #This is the steady state concentration of Unspliced mRNA
         self.ss_S_ = 0 #This is the steady state concentration of Spliced mRNA
+        self._use_buffer = False   # True when pre-allocated array mode is active (steady-state)
+        self._conc_ptr = 0         # write cursor into the pre-allocated buffer
 
-    def append_Conc (self, currConc):
+    # ------------------------------------------------------------------
+    # Pre-allocated buffer API (used by steady-state CLE_simulator_)
+    # ------------------------------------------------------------------
+    def init_conc_buffer(self, n_steps: int, max_buffer_mb: float = 4096.0):
+        """Pre-allocate a float32 array for concentration history.
+
+        After this call, ``append_Conc`` writes into the buffer instead of
+        appending to a Python list, and ``Conc[-1]`` / ``Conc[i]`` work as
+        before via ``__getitem__`` delegation.
+
+        Parameters
+        ----------
+        n_steps : int
+            Number of simulation steps to allocate.
+        max_buffer_mb : float
+            Per-object memory limit in MiB.  Raises ``MemoryError`` if the
+            requested buffer exceeds it.
+        """
+        req_mb = n_steps * 4 / (1024 * 1024)  # float32 = 4 bytes
+        if req_mb > max_buffer_mb:
+            raise MemoryError(
+                f"Gene {self.ID} bin {self.binID}: requested buffer "
+                f"({req_mb:.1f} MiB) exceeds per-object limit "
+                f"({max_buffer_mb:.1f} MiB). "
+                f"Reduce sampling_state, n_cells, or increase max_buffer_mb."
+            )
+        self._use_buffer = True
+        self._conc_ptr = 0
+        self.Conc = np.empty(n_steps, dtype=np.float32)
+
+    def _buffer_append(self, val):
+        if self._conc_ptr >= len(self.Conc):
+            raise MemoryError(
+                f"Gene {self.ID} bin {self.binID}: concentration buffer "
+                f"overflow ({self._conc_ptr} >= {len(self.Conc)}). "
+                f"This indicates a bug in step-count estimation."
+            )
+        self.Conc[self._conc_ptr] = max(val, 0.0)
+        self._conc_ptr += 1
+
+    def _buffer_getitem(self, idx):
+        """Delegate indexing so that Conc[-1] etc. work on the filled portion."""
+        if self._conc_ptr == 0:
+            raise IndexError("buffer is empty")
+        return self.Conc[:self._conc_ptr][idx]
+
+    def append_Conc(self, currConc):
+        if self._use_buffer:
+            self._buffer_append(currConc)
+            return
         if isinstance(currConc, list):
             if currConc[0] < 0:
                 self.Conc.append([0])
@@ -36,8 +87,7 @@ class gene(object):
             else:
                 self.Conc.append(currConc)
 
-
-    def append_Conc_S (self, currConc):
+    def append_Conc_S(self, currConc):
         if isinstance(currConc, list):
             if currConc[0] < 0:
                 self.Conc_S.append([0])
@@ -89,7 +139,11 @@ class gene(object):
         """
         selects input indices from self.Conc and form sc Expression
         """
-        self.scExpression = np.array(self.Conc)[list_indices]
+        if self._use_buffer:
+            filled = self.Conc[:self._conc_ptr]
+            self.scExpression = filled[list_indices]
+        else:
+            self.scExpression = np.array(self.Conc)[list_indices]
 
     def set_ss_conc_U(self, u_ss):
         if u_ss < 0:

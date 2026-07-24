@@ -12,7 +12,8 @@ class sergio (object):
     noise_type, decays, dynamics = False, sampling_state = 10, tol = 1e-3,\
     window_length = 100, dt = 0.01, optimize_sampling = False,\
     bifurcation_matrix = None, noise_params_splice = None, noise_type_splice = None,\
-    splice_ratio = 4, dt_splice = 0.01, migration_rate = None):
+    splice_ratio = 4, dt_splice = 0.01, migration_rate = None,\
+    max_memory_mb = 4096.0):
         """
         Noise is a gaussian white noise process with zero mean and finite variance.
         noise_params: The amplitude of noise in CLE. This can be a scalar to use
@@ -32,26 +33,29 @@ class sergio (object):
         noise_type_splice: Same as "noise_type" but for splicing. if not specified, the same noise type as pre-mRNA is used
         splice_ratio: it shows the relative amount of spliced mRNA to pre-mRNA (at steady-state) and therefore tunes the decay rate of spliced mRNA as a function of unspliced mRNA. Could be an array of length number_genes, or single value to use the same value for all genes
         dt_splice = time step for integrating splice SDE
+        max_memory_mb: per-gene-bin concentration buffer limit in MiB (default 4096 = 4 GiB).
+            Raises MemoryError before allocation if any buffer would exceed this.
 
 
         Note1: It's assumed that no two or more bins differentiate into the same new bin i.e. every bin has either 0 or 1 parent bin
         Note2: differentitation rates (e.g. type1 -> type2) specified in bifurcation_matrix specifies the percentage of cells of type2 that are at the vicinity of type1
         """
 
+        self.max_memory_mb_ = max_memory_mb
         self.nGenes_ = number_genes
         self.nBins_ = number_bins
         self.nSC_ = number_sc
         self.sampling_state_ = sampling_state
         self.tol_ = tol
         self.winLen_ = window_length
-        self.dt_ = dt
+        self.dt_ = np.float32(dt)
         self.optimize_sampling_ = optimize_sampling
         self.level2verts_ = {}
         self.gID_to_level_and_idx = {} # This dictionary gives the level and idx in self.level2verts_ of a given gene ID
         self.binDict = {} # This maps bin ID to list of gene objects in that bin; only used for dynamics simulations
         self.maxLevels_ = 0
-        self.init_concs_ = np.zeros((number_genes, number_bins))
-        self.meanExpression = -1 * np.ones((number_genes, number_bins))
+        self.init_concs_ = np.zeros((number_genes, number_bins), dtype=np.float32)
+        self.meanExpression = -1 * np.ones((number_genes, number_bins), dtype=np.float32)
         self.noiseType_ = noise_type
         self.dyn_ = dynamics
         self.nConvSteps = np.zeros(number_bins) # This holds the number of simulated steps till convergence
@@ -69,17 +73,17 @@ class sergio (object):
         self.graph_ = {}
 
         if np.isscalar(noise_params):
-            self.noiseParamsVector_ = np.repeat(noise_params, number_genes)
+            self.noiseParamsVector_ = np.repeat(np.float32(noise_params), number_genes)
         elif np.shape(noise_params)[0] == number_genes:
-            self.noiseParamsVector_ = noise_params
+            self.noiseParamsVector_ = np.asarray(noise_params, dtype=np.float32)
         else:
             print ("Error: expect one noise parameter per gene")
 
 
         if np.isscalar(decays) == 1:
-            self.decayVector_ = np.repeat(decays, number_genes)
+            self.decayVector_ = np.repeat(np.float32(decays), number_genes)
         elif np.shape(decays)[0] == number_genes:
-            self.decayVector_ = decays
+            self.decayVector_ = np.asarray(decays, dtype=np.float32)
         else:
             print ("Error: expect one decay parameter per gene")
             sys.exit()
@@ -235,6 +239,89 @@ class sergio (object):
         if self.dyn_:
             self.find_bin_order_(self.bifurcationMat_)
 
+    def build_graph_from_rows(self, targets_rows, regs_rows, shared_coop_state=0):
+        """
+        In-memory variant of ``build_graph`` that accepts parsed rows
+        (lists of lists) instead of CSV file paths.  Same semantics otherwise.
+        """
+        for i in range(self.nGenes_):
+            self.graph_[i] = {}
+            self.graph_[i]['targets'] = []
+
+        allRegs = []
+        allTargets = []
+
+        if shared_coop_state <= 0:
+            for row in targets_rows:
+                nRegs = int(row[1])
+                if nRegs == 0:
+                    print("Error: a master regulator (#Regs = 0) appeared in input")
+                    sys.exit()
+
+                currInteraction = []
+                currParents = []
+                for regId, K, C_state in zip(
+                    row[2: 2 + nRegs],
+                    row[2 + nRegs: 2 + 2 * nRegs],
+                    row[2 + 2 * nRegs: 2 + 3 * nRegs],
+                ):
+                    currInteraction.append((int(regId), float(K), float(C_state), 0))
+                    allRegs.append(int(regId))
+                    currParents.append(int(regId))
+                    self.graph_[int(regId)]['targets'].append(int(row[0]))
+
+                self.graph_[int(row[0])]['params'] = currInteraction
+                self.graph_[int(row[0])]['regs'] = currParents
+                self.graph_[int(row[0])]['level'] = -1
+                allTargets.append(int(row[0]))
+        else:
+            for row in targets_rows:
+                nRegs = int(float(row[1]))
+                if nRegs == 0:
+                    print("Error: a master regulator (#Regs = 0) appeared in input")
+                    sys.exit()
+
+                currInteraction = []
+                currParents = []
+                for regId, K in zip(
+                    row[2: 2 + nRegs],
+                    row[2 + nRegs: 2 + 2 * nRegs],
+                ):
+                    currInteraction.append(
+                        (int(float(regId)), float(K), shared_coop_state, 0)
+                    )
+                    allRegs.append(int(float(regId)))
+                    currParents.append(int(float(regId)))
+                    self.graph_[int(float(regId))]['targets'].append(
+                        int(float(row[0]))
+                    )
+
+                self.graph_[int(float(row[0]))]['params'] = currInteraction
+                self.graph_[int(float(row[0]))]['regs'] = currParents
+                self.graph_[int(float(row[0]))]['level'] = -1
+                allTargets.append(int(float(row[0])))
+
+        masterRegs = []
+        for row in regs_rows:
+            if len(row) != self.nBins_ + 1:
+                print("Error: Inconsistent number of bins")
+                sys.exit()
+
+            masterRegs.append(int(float(row[0])))
+            self.graph_[int(float(row[0]))]['rates'] = [float(i) for i in row[1:]]
+            self.graph_[int(float(row[0]))]['regs'] = []
+            self.graph_[int(float(row[0]))]['level'] = -1
+
+        self.master_regulators_idx_ = set(masterRegs)
+
+        if len(self.master_regulators_idx_) + len(allTargets) != self.nGenes_:
+            print("Error: Inconsistent number of genes")
+            sys.exit()
+
+        self.find_levels_(self.graph_)
+
+        if self.dyn_:
+            self.find_bin_order_(self.bifurcationMat_)
 
     def find_levels_ (self, graph):
         """
@@ -259,8 +346,41 @@ class sergio (object):
         self.level2verts_[currLayer] = []
         idx = 0
 
+        # Pre-compute non-self targets for layering (self-loops for
+        # auto-regulation must not block topological ordering).
+        _non_self_targets = {}
+        for v in V:
+            _non_self_targets[v] = set(graph[v]['targets']) - {v}
+
+        # Safety: detect genuine cycles (not just self-loops)
+        _max_layers = len(V) + 1  # one more than possible layers
         while U != V:
-            currVerts = set(filter(lambda v: set(graph[v]['targets']).issubset(Z), V-U))
+            if currLayer > _max_layers:
+                remaining = V - U
+                raise RuntimeError(
+                    f"find_levels_: cycle detected in GRN. "
+                    f"Genes {sorted(remaining)} could not be layered. "
+                    f"Check for mutual-regulation cycles (e.g. A→B and B→A)."
+                )
+
+            currVerts = set(
+                filter(lambda v: _non_self_targets[v].issubset(Z), V - U)
+            )
+
+            # If stuck (mutual-regulation cycle), promote ALL remaining
+            # vertices to the current layer so they are simulated together.
+            # Within-cycle regulator reads will use same-step values, which
+            # is a valid approximation for the Euler-Maruyama scheme.
+            if not currVerts and U != V:
+                remaining = list(V - U)
+                remaining.sort(
+                    key=lambda v: (
+                        sum(1 for r in set(graph[v].get('regs', [])) if r != v and r in Z),
+                        v,
+                    ),
+                    reverse=True,
+                )
+                currVerts = set(remaining)
 
             for v in currVerts:
                 graph[v]['level'] = currLayer
@@ -316,7 +436,11 @@ class sergio (object):
     def calculate_half_response_(self, level):
         """
         Calculates the half response for all interactions between previous layer
-        and current layer
+        and current layer.
+
+        When a regulator has not been simulated yet (e.g. due to
+        mutual-regulation cycles), a default half-response of 1.0 is used as
+        a fallback so the simulation can proceed.
         """
 
         currGenes = self.level2verts_[level]
@@ -329,29 +453,62 @@ class sergio (object):
                     meanArr = self.meanExpression[regIdx]
 
                     if set(meanArr) == set([-1]):
-                        print ("Error: Something's wrong in either layering or simulation. Expression of one or more genes in previous layer was not modeled.")
-                        sys.exit()
-
-                    self.graph_[g[0].ID]['params'][c] = (self.graph_[g[0].ID]['params'][c][0], self.graph_[g[0].ID]['params'][c][1], self.graph_[g[0].ID]['params'][c][2], np.mean(meanArr))
+                        # Regulator not yet simulated (mutual-regulation
+                        # cycle).  Use a default half-response so the
+                        # simulation can proceed.
+                        self.graph_[g[0].ID]['params'][c] = (
+                            self.graph_[g[0].ID]['params'][c][0],
+                            self.graph_[g[0].ID]['params'][c][1],
+                            self.graph_[g[0].ID]['params'][c][2],
+                            np.float32(1.0),
+                        )
+                    else:
+                        self.graph_[g[0].ID]['params'][c] = (
+                            self.graph_[g[0].ID]['params'][c][0],
+                            self.graph_[g[0].ID]['params'][c][1],
+                            self.graph_[g[0].ID]['params'][c][2],
+                            np.float32(np.mean(meanArr)),
+                        )
                     c += 1
             #Else: g is a master regulator and does not need half response
 
-    def hill_(self, reg_conc, half_response, coop_state, repressive = False):
+    def _estimate_step_memory_mb(self, n_steps, n_genes_level, n_bins=None):
+        """Estimate memory (MiB) for concentration buffers at one level."""
+        if n_bins is None:
+            n_bins = self.nBins_
+        return n_genes_level * n_bins * n_steps * 4 / (1024 * 1024)
+
+    def hill_(self, reg_conc, half_response, coop_state, repressive=False, hr_cs=None):
         """
-        So far, hill function was used in the code to model 1 interaction at a time.
-        So the inputs are single values instead of list or array. Also, it models repression based on this assumption.
-        if decided to make it work on multiple interaction, repression should be taken care as well.
+        Hill function for activation/repression.
+
+        Accepts scalar or array ``reg_conc``.  Returns the same shape as
+        ``reg_conc`` (float32).
+
+        Parameters
+        ----------
+        hr_cs : float, optional
+            Pre-computed ``half_response ** coop_state``.  When provided,
+            avoids recomputing the power on every call.
         """
-        if reg_conc == 0:
-            if repressive:
-                return 1
-            else:
-                return 0
-        else:
-            if repressive:
-                return 1 - np.true_divide(np.power(reg_conc, coop_state), (np.power(half_response, coop_state) + np.power(reg_conc, coop_state)) )
-            else:
-                return np.true_divide(np.power(reg_conc, coop_state), (np.power(half_response, coop_state) + np.power(reg_conc, coop_state)) )
+        reg_conc = np.asarray(reg_conc, dtype=np.float32)
+        cs = np.float32(coop_state)
+
+        if hr_cs is None:
+            hr_cs = np.float32(np.power(np.float32(half_response), cs))
+
+        # For reg_conc == 0: activation → 0, repression → 1
+        zero_mask = (reg_conc == 0)
+        pow_reg = np.power(reg_conc, cs)
+        denom = np.float32(hr_cs) + pow_reg
+        # Avoid division by zero
+        denom = np.where(denom == 0, np.float32(1.0), denom)
+        result = np.true_divide(pow_reg, denom)
+        result = np.where(zero_mask, np.float32(0.0), result)
+
+        if repressive:
+            return np.float32(1.0) - result
+        return result
 
     def init_gene_bin_conc_ (self, level):
         """
@@ -366,158 +523,311 @@ class sergio (object):
                 allBinRates = self.graph_[g[0].ID]['rates']
 
                 for bIdx, rate in enumerate(allBinRates):
-                    g[bIdx].append_Conc(np.true_divide(rate, self.decayVector_[g[0].ID]))
+                    g[bIdx].append_Conc(np.float32(np.true_divide(rate, self.decayVector_[g[0].ID])))
 
             else:
                 params = self.graph_[g[0].ID]['params']
 
                 for bIdx in range(self.nBins_):
-                    rate = 0
+                    rate = np.float32(0.0)
                     for interTuple in params:
                         meanExp = self.meanExpression[interTuple[0], bIdx]
-                        rate += np.abs(interTuple[1]) * self.hill_(meanExp, interTuple[3], interTuple[2], interTuple[1] < 0)
+                        rate += np.float32(np.abs(interTuple[1])) * self.hill_(meanExp, interTuple[3], interTuple[2], interTuple[1] < 0)
 
-                    g[bIdx].append_Conc(np.true_divide(rate, self.decayVector_[g[0].ID]))
+                    g[bIdx].append_Conc(np.float32(np.true_divide(rate, self.decayVector_[g[0].ID])))
 
     def calculate_prod_rate_(self, bin_list, level):
         """
         calculates production rates for the input list of gene objects in different bins but all associated to a single gene ID
+
+        Returns a float32 numpy array of shape (n_bins,).
         """
         type = bin_list[0].Type
 
         if (type == 'MR'):
             rates = self.graph_[bin_list[0].ID]['rates']
-            return [rates[gb.binID] for gb in bin_list]
+            return np.array([rates[gb.binID] for gb in bin_list], dtype=np.float32)
 
         else:
             params = self.graph_[bin_list[0].ID]['params']
-            Ks = [np.abs(t[1]) for t in params]
+            Ks = np.array([np.abs(t[1]) for t in params], dtype=np.float32)
             regIndices = [t[0] for t in params]
             binIndices = [gb.binID for gb in bin_list]
             currStep = bin_list[0].simulatedSteps_
             lastLayerGenes = np.copy(self.level2verts_[level + 1])
-            hillMatrix = np.zeros((len(regIndices), len(binIndices)))
+            n_regs = len(regIndices)
+            n_bins = len(binIndices)
 
+            # --- Pre-gather all regulator concentrations ---
+            reg_concs = np.empty((n_regs, n_bins), dtype=np.float32)
             for tupleIdx, rIdx in enumerate(regIndices):
-		#print "Here"
                 regGeneLevel = self.gID_to_level_and_idx[rIdx][0]
                 regGeneIdx = self.gID_to_level_and_idx[rIdx][1]
                 regGene_allBins = self.level2verts_[regGeneLevel][regGeneIdx]
                 for colIdx, bIdx in enumerate(binIndices):
-                    hillMatrix[tupleIdx, colIdx] = self.hill_(regGene_allBins[bIdx].Conc[currStep], params[tupleIdx][3], params[tupleIdx][2], params[tupleIdx][1] < 0)
+                    if regGene_allBins[bIdx]._use_buffer:
+                        reg_concs[tupleIdx, colIdx] = regGene_allBins[bIdx].Conc[regGene_allBins[bIdx]._conc_ptr - 1]
+                    else:
+                        reg_concs[tupleIdx, colIdx] = regGene_allBins[bIdx].Conc[currStep]
+
+            # --- Vectorized hill for all regulator×bin pairs ---
+            hillMatrix = np.empty((n_regs, n_bins), dtype=np.float32)
+            for tupleIdx in range(n_regs):
+                hillMatrix[tupleIdx, :] = self.hill_(
+                    reg_concs[tupleIdx, :],
+                    params[tupleIdx][3],
+                    params[tupleIdx][2],
+                    params[tupleIdx][1] < 0,
+                )
 
             return np.matmul(Ks, hillMatrix)
 
 
+    @staticmethod
+    def _compute_noise_(rng, rates, decay, noise_type, noise_param, sqrt_dt):
+        """
+        Compute stochastic noise term for the CLE.
+
+        Parameters
+        ----------
+        rng : numpy.random.Generator
+        rates : ndarray (..., n_bins) – production (or any additive) rates
+        decay : ndarray (..., n_bins) – decay rates
+        noise_type : str – 'sp', 'spd', or 'dpd'
+        noise_param : float32 – noise amplitude
+        sqrt_dt : float32 – sqrt(dt)
+
+        Returns
+        -------
+        noise : ndarray, same shape as rates (already multiplied by sqrt_dt)
+        """
+        # Guard against tiny negative values from floating-point imprecision
+        # before taking sqrt (mathematically rates/decay are >= 0).
+        safe_rates = np.maximum(rates, np.float32(0.0))
+        safe_decay = np.maximum(decay, np.float32(0.0))
+
+        if noise_type == 'sp':
+            dw = rng.normal(size=rates.shape).astype(np.float32)
+            noise = noise_param * np.sqrt(safe_rates, dtype=np.float32) * dw
+        elif noise_type == 'spd':
+            dw = rng.normal(size=rates.shape).astype(np.float32)
+            amplitude = noise_param * (
+                np.sqrt(safe_rates, dtype=np.float32) + np.sqrt(safe_decay, dtype=np.float32)
+            )
+            noise = amplitude * dw
+        else:  # 'dpd'
+            dw_p = rng.normal(size=rates.shape).astype(np.float32)
+            dw_d = rng.normal(size=rates.shape).astype(np.float32)
+            noise = (
+                noise_param * np.sqrt(safe_rates, dtype=np.float32) * dw_p
+                + noise_param * np.sqrt(safe_decay, dtype=np.float32) * dw_d
+            )
+        return sqrt_dt * noise
+
     def CLE_simulator_(self, level):
 
         self.calculate_half_response_(level)
-        self.init_gene_bin_conc_(level)
         nReqSteps = self.calculate_required_steps_(level)
-        sim_set = np.copy(self.level2verts_[level]).tolist()
-        print ("There are " + str(len(sim_set)) +" genes to simulate in this layer")
 
-        while sim_set != []:
-            nRemainingG = len(sim_set)
-            if nRemainingG%10 == 0:
-                #print "\t Still " + str(nRemainingG) + " genes to simulate"
-                sys.stdout.flush()
+        # ---- Pre-allocate concentration buffers BEFORE init (so initial conc
+        #      is written into the pre-allocated buffer, not a Python list) ----
+        sim_genes = self.level2verts_[level]
+        n_genes_level = len(sim_genes)
 
-            delIndicesGenes = []
-            for gi, g in enumerate(sim_set):
-                gID = g[0].ID
-                gLevel = self.gID_to_level_and_idx[gID][0]
-                gIDX = self.gID_to_level_and_idx[gID][1]
+        # --- Memory safety check ---
+        est_mb = self._estimate_step_memory_mb(nReqSteps, n_genes_level)
+        per_obj_mb = nReqSteps * 4 / (1024 * 1024)
+        if est_mb > self.max_memory_mb_:
+            raise MemoryError(
+                f"Level {level}: estimated {est_mb:.1f} MiB for concentration "
+                f"buffers exceeds max_memory_mb={self.max_memory_mb_:.0f} MiB. "
+                f"({n_genes_level} genes × {self.nBins_} bins × {nReqSteps} steps). "
+                f"Reduce sampling_state, n_cells, or increase max_memory_mb."
+            )
+        for g_list in sim_genes:
+            for gb in g_list:
+                gb.init_conc_buffer(nReqSteps, max_buffer_mb=per_obj_mb * 2)
 
-                #### DEBUG ######
-                if level != gLevel:
-                    sys.exit()
-                #################
-                currExp = [gb.Conc[-1] for gb in g]
+        # ---- Now initialize concentrations into the pre-allocated buffer ----
+        self.init_gene_bin_conc_(level)
 
-                #Calculate production rate
-                prod_rate = self.calculate_prod_rate_ (g, level) # 1 * #currBins
+        # ---- Pre-compute positive sc indices ----
+        pos_sc_indices = nReqSteps + self.scIndices_  # now positive indices into buffer
 
-                #Calculate decay rate
-                decay = np.multiply(self.decayVector_[gID], currExp)
+        # ---- Build fast lookup tables for regulator access ----
+        gene_reg_lookups = []
+        gene_K_arrays = []       # float32 array of |K| values per gene
+        gene_hr_arrays = []      # float32 array of half-response values
+        gene_cs_arrays = []      # float32 array of coop states
+        gene_hr_cs_arrays = []   # float32 array of pre-computed hr**cs
+        gene_repressive = []     # bool array per gene
+        gene_is_mr = []          # bool per gene
 
-                #Calculate noise
+        for g_list in sim_genes:
+            gID = g_list[0].ID
+            if g_list[0].Type == 'MR':
+                gene_is_mr.append(True)
+                gene_reg_lookups.append(None)
+                gene_K_arrays.append(None)
+                gene_hr_arrays.append(None)
+                gene_cs_arrays.append(None)
+                gene_hr_cs_arrays.append(None)
+                gene_repressive.append(None)
+            else:
+                gene_is_mr.append(False)
+                params = self.graph_[gID]['params']
+                n_regs = len(params)
+                lookups = []
+                Ks = np.empty(n_regs, dtype=np.float32)
+                hrs = np.empty(n_regs, dtype=np.float32)
+                css = np.empty(n_regs, dtype=np.float32)
+                hr_css = np.empty(n_regs, dtype=np.float32)
+                reps = np.empty(n_regs, dtype=bool)
+                for i, (regIdx, K, cs, hr) in enumerate(params):
+                    lookups.append(self.gID_to_level_and_idx[regIdx])
+                    Ks[i] = np.float32(np.abs(K))
+                    hrs[i] = np.float32(hr)
+                    css[i] = np.float32(cs)
+                    hr_css[i] = np.float32(np.power(np.float32(hr), np.float32(cs)))
+                    reps[i] = (K < 0)
+                gene_reg_lookups.append(lookups)
+                gene_K_arrays.append(Ks)
+                gene_hr_arrays.append(hrs)
+                gene_cs_arrays.append(css)
+                gene_hr_cs_arrays.append(hr_css)
+                gene_repressive.append(reps)
 
-                if self.noiseType_ == 'sp':
-                    # This notation is inconsistent with our formulation, dw should
-                    #include dt^0.5 as well, but here we multipy dt^0.5 later
-                    dw = np.random.normal(size = len(currExp))
-                    amplitude = np.multiply (self.noiseParamsVector_[gID] , np.power(prod_rate, 0.5))
-                    noise = np.multiply(amplitude, dw)
+        # ---- Batch random number generator ----
+        rng = np.random.default_rng()
 
-                elif self.noiseType_ == "spd":
-                    dw = np.random.normal(size = len(currExp))
-                    amplitude = np.multiply (self.noiseParamsVector_[gID] , np.power(prod_rate, 0.5) + np.power(decay, 0.5))
-                    noise = np.multiply(amplitude, dw)
+        # ---- Identify which genes are actually targets (not MRs) for the loop ----
+        is_target = np.array([not m for m in gene_is_mr], dtype=bool)
+        target_indices = np.where(is_target)[0]
+        mr_indices = np.where(~is_target)[0]
 
+        n_mr = len(mr_indices)
+        n_target = len(target_indices)
+        n_bins = self.nBins_
+        dt = self.dt_
+        sqrt_dt = np.float32(np.sqrt(dt))
 
-                elif self.noiseType_ == "dpd":
-                    #TODO Current implementation is wrong, it should take different noise facotrs (noiseParamsVector_) for production and decay
-                    #Answer to above TODO: not neccessary! 'dpd' is already different than 'spd'
-                    dw_p = np.random.normal(size = len(currExp))
-                    dw_d = np.random.normal(size = len(currExp))
+        # ---- Pre-compute MR constant arrays (shape (n_mr, n_bins)) ----
+        mr_rates = np.empty((max(n_mr, 1), n_bins), dtype=np.float32)
+        mr_decay_factors = np.empty(max(n_mr, 1), dtype=np.float32)
+        mr_noise_params = np.empty(max(n_mr, 1), dtype=np.float32)
+        for idx_in_mr, gi in enumerate(mr_indices):
+            gID = sim_genes[gi][0].ID
+            rates = self.graph_[gID]['rates']
+            for b in range(n_bins):
+                mr_rates[idx_in_mr, b] = np.float32(rates[sim_genes[gi][b].binID])
+            mr_decay_factors[idx_in_mr] = self.decayVector_[gID]
+            mr_noise_params[idx_in_mr] = self.noiseParamsVector_[gID]
 
-                    amplitude_p = np.multiply (self.noiseParamsVector_[gID] , np.power(prod_rate, 0.5))
-                    amplitude_d = np.multiply (self.noiseParamsVector_[gID] , np.power(decay, 0.5))
+        # ---- Pre-allocate reusable arrays for the main loop ----
+        if n_mr > 0:
+            _mr_currexp = np.empty((n_mr, n_bins), dtype=np.float32)
+            _mr_decay = np.empty((n_mr, n_bins), dtype=np.float32)
+            _mr_dx = np.empty((n_mr, n_bins), dtype=np.float32)
 
-                    noise = np.multiply(amplitude_p, dw_p) + np.multiply(amplitude_d, dw_d)
+        # Pre-allocate target temp arrays sized by max regulators per target
+        max_n_regs = max(
+            (len(l) for l in gene_reg_lookups if l is not None),
+            default=1,
+        )
+        _tgt_reg_concs = np.empty((max_n_regs, n_bins), dtype=np.float32)
+        _tgt_hill_vals = np.empty((max_n_regs, n_bins), dtype=np.float32)
 
+        # ---- Main simulation loop: step through time ----
+        for step in range(1, nReqSteps):
+            # ================================================
+            # --- Process MRs in batch ---
+            # ================================================
+            if n_mr > 0:
+                # Gather current expressions: shape (n_mr, n_bins)
+                for gi_idx, gi in enumerate(mr_indices):
+                    g_list = sim_genes[gi]
+                    for bi in range(n_bins):
+                        _mr_currexp[gi_idx, bi] = g_list[bi].Conc[g_list[bi]._conc_ptr - 1]
 
+                # Decay: decay_factor[gi] * currExp[gi, :]
+                np.multiply(mr_decay_factors[:, None], _mr_currexp, out=_mr_decay)
 
-                curr_dx = self.dt_ * (prod_rate - decay) + np.power(self.dt_, 0.5) * noise
+                # Production - decay
+                np.subtract(mr_rates, _mr_decay, out=_mr_dx)
+                np.multiply(dt, _mr_dx, out=_mr_dx)
 
-                delIndices = []
-                for bIDX, gObj in enumerate(g):
-                    binID = gObj.binID
-                    #print gObj.Conc
-                    gObj.append_Conc(gObj.Conc[-1] + curr_dx[bIDX])
-                    gObj.incrementStep()
+                # Noise (broadcast noise_params as (n_mr, 1))
+                noise = self._compute_noise_(
+                    rng, mr_rates, _mr_decay,
+                    self.noiseType_, mr_noise_params[:, None], sqrt_dt,
+                )
+                np.add(_mr_dx, noise, out=_mr_dx)
 
+                # Update each gene-bin object
+                for gi_idx, gi in enumerate(mr_indices):
+                    g_list = sim_genes[gi]
+                    for bi, gb in enumerate(g_list):
+                        gb.append_Conc(gb.Conc[gb._conc_ptr - 1] + _mr_dx[gi_idx, bi])
+                        gb.incrementStep()
 
-                    """
-                    The below section is commented since for steady state simulation we do not need to check convergence.
-                    In fact, in steady state simulation we already start from converged region!
-                    ##########################################################################
-                    # if not gObj.converged_:
-                    #     gObj.append_dConc(curr_dx[bIDX])
-                    #
-                    # #Check Convergence
-                    # if (gObj.converged_ == False and gObj.simulatedSteps_ >= 2 * self.winLen_):
-                    #     # this is the previous convergence criteria: np.abs(np.mean( gObj.dConc[-self.winLen_:] )) <= self.tol_
-                    #     # below is the new one based on T-test:
-                    #     #sample1 = gObj.Conc[-2*self.winLen_:-1*self.winLen_]
-                    #     #sample2 = gObj.Conc[-1*self.winLen_:]
-                    #     #_,p = ttest_ind(sample1,sample2)
-                    #
-                    #     #if p >= self.tol_:
-                    #     #TODO Do something about 2495 below. This is to gaurantee that the size meets the safety_steps threshhold. Somehow sync them
-                    #     # or try to get rid of it by making a better convergence criteria
-                    #     if np.abs(np.mean( gObj.dConc[-self.winLen_:] )) <= self.tol_ or len(gObj.Conc) == 2495:
-                    #         gObj.setConverged()
-                    #         gObj.clear_Conc()
-                    #         gObj.clear_dConc()
-                    ###########################################################################
-                    """
+            # ================================================
+            # --- Process target genes ---
+            # ================================================
+            for gi in target_indices:
+                g_list = sim_genes[gi]
+                gID = g_list[0].ID
+                lookups = gene_reg_lookups[gi]
+                n_regs = len(lookups)
+                Ks = gene_K_arrays[gi]          # (n_regs,)
+                hr_css = gene_hr_cs_arrays[gi]  # (n_regs,)
+                css = gene_cs_arrays[gi]        # (n_regs,)
+                reps = gene_repressive[gi]      # (n_regs,)
 
-                    #Check number samples
-                    #if (gObj.converged_ and len(gObj.Conc) == self.calculate_required_steps_(level)):
-                    if len(gObj.Conc) == nReqSteps:
-                        gObj.set_scExpression(self.scIndices_)
-                        self.meanExpression [gID, binID] = np.mean(gObj.scExpression)
-                        self.level2verts_[level][gIDX][binID] = gObj
-                        delIndices.append(bIDX)
+                # Gather current regulator concentrations: shape (n_regs, n_bins)
+                for ri, (reg_level, reg_idx) in enumerate(lookups):
+                    reg_gene_bins = self.level2verts_[reg_level][reg_idx]
+                    for bi in range(n_bins):
+                        _tgt_reg_concs[ri, bi] = reg_gene_bins[bi].Conc[reg_gene_bins[bi]._conc_ptr - 1]
 
-                sim_set[gi] = [i for j, i in enumerate(g) if j not in delIndices]
+                # Vectorized hill with pre-computed hr**cs: apply each regulator's hill across all bins
+                for ri in range(n_regs):
+                    _tgt_hill_vals[ri, :] = self.hill_(
+                        _tgt_reg_concs[ri, :],
+                        0.0,  # half_response not used when hr_cs provided
+                        css[ri],
+                        reps[ri],
+                        hr_cs=hr_css[ri],
+                    )
 
-                if sim_set[gi] == []:
-                    delIndicesGenes.append(gi)
+                # Production rate = Ks @ hill_vals  → shape (n_bins,)
+                prod_rate = np.matmul(Ks, _tgt_hill_vals[:n_regs])
 
-            sim_set = [i for j, i in enumerate(sim_set) if j not in delIndicesGenes]
+                # Current expression
+                currExp = np.empty(n_bins, dtype=np.float32)
+                decay = np.empty(n_bins, dtype=np.float32)
+                for bi, gb in enumerate(g_list):
+                    currExp[bi] = gb.Conc[gb._conc_ptr - 1]
+                np.multiply(self.decayVector_[gID], currExp, out=decay)
+
+                noise = self._compute_noise_(
+                    rng, prod_rate, decay,
+                    self.noiseType_, self.noiseParamsVector_[gID], sqrt_dt,
+                )
+                np.add(np.subtract(prod_rate, decay, out=decay), noise, out=decay)
+                np.multiply(dt, decay, out=decay)  # decay now holds curr_dx
+
+                for bi, gb in enumerate(g_list):
+                    gb.append_Conc(currExp[bi] + decay[bi])
+                    gb.incrementStep()
+
+        # ---- Finalize: sample single-cell expressions ----
+        for g_list in sim_genes:
+            gID = g_list[0].ID
+            for gb in g_list:
+                binID = gb.binID
+                gb.set_scExpression(pos_sc_indices)
+                self.meanExpression[gID, binID] = np.mean(gb.scExpression)
+                self.level2verts_[level][self.gID_to_level_and_idx[gID][1]][binID] = gb
 
     def simulate(self):
         for level in range(self.maxLevels_, -1, -1):
@@ -526,7 +836,7 @@ class sergio (object):
             print ("Done with current level")
 
     def getExpressions(self):
-        ret = np.zeros((self.nBins_, self.nGenes_, self.nSC_))
+        ret = np.zeros((self.nBins_, self.nGenes_, self.nSC_), dtype=np.float32)
         for l in range(self.maxLevels_ + 1):
             currGeneBins = self.level2verts_[l]
             for g in currGeneBins:
@@ -753,12 +1063,12 @@ class sergio (object):
                     # This notation is inconsistent with our formulation, dw should
                     #include dt^0.5 as well, but here we multipy dt^0.5 later
                     dw = np.random.normal(size = nc)
-                    amplitude = np.multiply (self.noiseParamsVector_[gID] , np.power(prod_rate_U, 0.5))
+                    amplitude = np.multiply (self.noiseParamsVector_[gID] , np.sqrt(prod_rate_U))
                     noise_U = np.multiply(amplitude, dw)
 
                 elif self.noiseType_ == "spd":
                     dw = np.random.normal(size = nc)
-                    amplitude = np.multiply (self.noiseParamsVector_[gID] , np.power(prod_rate_U, 0.5) + np.power(decay_U, 0.5))
+                    amplitude = np.multiply (self.noiseParamsVector_[gID] , np.sqrt(prod_rate_U) + np.sqrt(decay_U))
                     noise_U = np.multiply(amplitude, dw)
 
 
@@ -768,8 +1078,8 @@ class sergio (object):
                     dw_p = np.random.normal(size = nc)
                     dw_d = np.random.normal(size = nc)
 
-                    amplitude_p = np.multiply (self.noiseParamsVector_[gID] , np.power(prod_rate_U, 0.5))
-                    amplitude_d = np.multiply (self.noiseParamsVector_[gID] , np.power(decay_U, 0.5))
+                    amplitude_p = np.multiply (self.noiseParamsVector_[gID] , np.sqrt(prod_rate_U))
+                    amplitude_d = np.multiply (self.noiseParamsVector_[gID] , np.sqrt(decay_U))
                     noise_U = np.multiply(amplitude_p, dw_p) + np.multiply(amplitude_d, dw_d)
 
 
@@ -780,12 +1090,12 @@ class sergio (object):
                     # This notation is inconsistent with our formulation, dw should
                     #include dt^0.5 as well, but here we multipy dt^0.5 later
                     dw = np.random.normal(size = nc)
-                    amplitude = np.multiply (self.noiseParamsVectorSp_[gID] , np.power(prod_rate_S, 0.5))
+                    amplitude = np.multiply (self.noiseParamsVectorSp_[gID] , np.sqrt(prod_rate_S))
                     noise_S = np.multiply(amplitude, dw)
 
                 elif self.noiseTypeSp_ == "spd":
                     dw = np.random.normal(size = nc)
-                    amplitude = np.multiply (self.noiseParamsVectorSp_[gID] , np.power(prod_rate_S, 0.5) + np.power(decay_S, 0.5))
+                    amplitude = np.multiply (self.noiseParamsVectorSp_[gID] , np.sqrt(prod_rate_S) + np.sqrt(decay_S))
                     noise_S = np.multiply(amplitude, dw)
 
 
@@ -795,14 +1105,14 @@ class sergio (object):
                     dw_p = np.random.normal(size = nc)
                     dw_d = np.random.normal(size = nc)
 
-                    amplitude_p = np.multiply (self.noiseParamsVectorSp_[gID] , np.power(prod_rate_S, 0.5))
-                    amplitude_d = np.multiply (self.noiseParamsVectorSp_[gID] , np.power(decay_S, 0.5))
+                    amplitude_p = np.multiply (self.noiseParamsVectorSp_[gID] , np.sqrt(prod_rate_S))
+                    amplitude_d = np.multiply (self.noiseParamsVectorSp_[gID] , np.sqrt(decay_S))
                     noise_S = np.multiply(amplitude_p, dw_p) + np.multiply(amplitude_d, dw_d)
 
 
 
-                curr_dU = self.dt_ * (prod_rate_U - decay_U) + np.power(self.dt_, 0.5) * noise_U
-                curr_dS = self.dt_ * (prod_rate_S - decay_S) + np.power(self.dt_, 0.5) * noise_S
+                curr_dU = self.dt_ * (prod_rate_U - decay_U) + np.sqrt(self.dt_) * noise_U
+                curr_dS = self.dt_ * (prod_rate_S - decay_S) + np.sqrt(self.dt_) * noise_S
 
                 for i in range(nc):
                     if currU[i] + curr_dU[i] < 0:

@@ -35,7 +35,7 @@ simulation:
 benchmark:
   train_data: future
   output_mode: full_test
-  global_run_name: run_config_test
+  global_run_name: run_test_sergio_2
   future_start_tp: 8
   ko_output_genes: none
   restart_mode: save

@@ -70,7 +70,9 @@ class BenchmarkGRNConfig:
             targets.append(row)
 
         master_regulators = [idx for idx in range(self.n_genes) if not incoming[idx]]
-        regulator_rate = [0.0] + [20.0] * (n_time_bins - 1)
+        total_time = 100
+        step = total_time // n_time_bins
+        regulator_rate = [float(i * step) for i in range(n_time_bins)]
         regs = [[float(idx)] + regulator_rate for idx in master_regulators]
         return targets, regs
 
