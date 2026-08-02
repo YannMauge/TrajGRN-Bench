@@ -25,7 +25,7 @@
           "enum": ["simul_replicates", "simul_ko", "false"]
         },
         "replicates_number": { "type": "integer", "minimum": 1 },
-        "simulator_backend": { "type": "string", "enum": ["harissa", "boolode", "sergio"] },
+        "simulator_backend": { "type": "string", "enum": ["harissa", "boolode", "sergio", "dyngen"] },
         "simul_ko_genes": { "type": "string" }
       },
       "additionalProperties": false

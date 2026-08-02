@@ -20,7 +20,7 @@
 #   - no_traj    : do not output simulation
 #
 # simulation: "simul_replicates" for replicates, "simul_ko" for knockout, "false" for existing data
-# simulator_backend: "harissa" (default), "boolode", or "sergio"
+# simulator_backend: "harissa" (default), "boolode", "sergio", or "dyngen"
 # global_run_name: Name for the benchmark run
 # run_methods_json: JSON object specifying which methods to run
 # future_start_tp: Timepoint to start future prediction (for future train_data only)
@@ -113,8 +113,8 @@ validate_inputs() {
         exit 1
     }
 
-    [[ "$simulator_backend" =~ ^(harissa|boolode|sergio)$ ]] || {
-        log_error "Invalid simulator_backend: $simulator_backend. Must be one of: harissa, boolode, sergio"
+    [[ "$simulator_backend" =~ ^(harissa|boolode|sergio|dyngen)$ ]] || {
+        log_error "Invalid simulator_backend: $simulator_backend. Must be one of: harissa, boolode, sergio, dyngen"
         exit 1
     }
 
@@ -161,6 +161,7 @@ _simulator_dir() {
     case "$simulator_backend" in
         boolode) echo "boolode" ;;
         sergio)   echo "sergio" ;;
+        dyngen)   echo "dyngen" ;;
         *)        echo "Harissa" ;;
     esac
 }
@@ -169,6 +170,7 @@ _simulator_label() {
     case "$simulator_backend" in
         boolode) echo "BoolODE" ;;
         sergio)   echo "SERGIO" ;;
+        dyngen)   echo "dyngen" ;;
         *)        echo "Harissa" ;;
     esac
 }

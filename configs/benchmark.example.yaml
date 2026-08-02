@@ -12,7 +12,7 @@
 #   - no_traj    : do not output simulation
 #
 # simulation: "simul_replicates" for replicates, "simul_ko" for knockout, "false" for existing data
-# simulator_backend: "harissa" (default), "boolode", or "sergio"
+# simulator_backend: "harissa" (default), "boolode", "sergio", or "dyngen"
 # global_run_name: Name for the benchmark run
 # run_methods_json: JSON object specifying which methods to run
 # future_start_tp: Timepoint to start future prediction (for future train_data only)
@@ -29,13 +29,13 @@ paths:
 simulation:
   mode: simul_replicates
   replicates_number: 1
-  simulator_backend: sergio
+  simulator_backend: dyngen
   simul_ko_genes: all
 
 benchmark:
   train_data: future
   output_mode: full_test
-  global_run_name: run_test_sergio_2
+  global_run_name: run_test_dyngen
   future_start_tp: 8
   ko_output_genes: none
   restart_mode: save

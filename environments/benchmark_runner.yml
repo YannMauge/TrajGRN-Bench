@@ -21,6 +21,20 @@ dependencies:
   - pyyaml
   - pot
   - notebook
+  # ── R + dyngen simulator support ─────────────────────────────────────
+  - r-base>=4.2
+  - r-tibble
+  - r-matrix
+  - r-rcpp
+  - r-rcpparmadillo
+  - r-dynutils
+  - r-assertthat
+  - r-crayon
+  - r-pbapply
+  - r-readr
+  - r-igraph
+  # dyngen itself must be installed from CRAN after env creation:
+  #   conda run -n benchmark_runner R -e 'install.packages("dyngen")'
   - pip:
       - numpy
       - harissa==3.0.8

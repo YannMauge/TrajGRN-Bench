@@ -240,6 +240,30 @@ def parse_ko_labels(ko_genes: str, gene_names: Sequence[str]) -> List[str]:
     return labels
 
 
+def build_dyngen_backbone_spec(n_genes: int) -> Optional[str]:
+    """Convert the common benchmark GRN into a compact string for dyngen's R script.
+
+    Format: ``reg>tar:eff:str;reg>tar:eff:str;…``
+    - *reg* = 0 for stimulus edges, otherwise 1‑based gene index
+    - *eff* = +1 (activation) or −1 (inhibition)
+    - *str* = absolute interaction strength
+
+    Returns None if no benchmark GRN is defined for *n_genes*.
+    """
+    try:
+        grn = get_benchmark_grn(n_genes)
+    except ValueError:
+        return None
+
+    parts: List[str] = []
+    for regulator, target, strength in grn.harissa_edges:
+        effect = 1 if strength >= 0 else -1
+        abs_str = int(abs(strength))
+        parts.append(f"{regulator}>{target}:{effect}:{abs_str}")
+
+    return ";".join(parts)
+
+
 def write_shared_files(output_folder: Path, gene_names: Sequence[str], degradation_rates: tuple[float, float]) -> None:
     rates_dir = output_folder / "Rates"
     rates_dir.mkdir(parents=True, exist_ok=True)
