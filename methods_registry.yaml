@@ -192,6 +192,34 @@ methods:
       trajectory_reconstruction: false
       perturbation_training: false
 
+  dynGENIE3:
+    display_name: dynGENIE3
+    description: >
+      Semi-parametric approach for GRN inference from time-series
+      expression data; extends GENIE3 by incorporating temporal
+      information via finite-difference approximation of expression
+      derivatives. Uses Random Forests or Extra-Trees.
+    github: https://github.com/vahuynh/dynGENIE3
+    publication: "Scientific Reports (2018) DOI:10.1038/s41598-018-21715-0"
+    entrypoint:
+      type: python
+      script: methods/dynGENIE3/dynGENIE3_ontrain.py
+      pass_output_mode: false
+      pass_ko_genes: false
+      supports_perturbation_training: false
+      extra_args: []
+    execution:
+      default_runner: docker
+      conda_env: cardamom_env
+      container:
+        image: benchmark/cardamomot:latest
+        env_file: environments/cardamom_ot.yml
+        env_name: cardamom_env
+    capabilities:
+      grn_inference: true
+      trajectory_reconstruction: false
+      perturbation_training: false
+
   PEARSON:
     display_name: Pearson (coexpression)
     description: >
@@ -315,6 +343,7 @@ iteration_order:
   - FLeCS
   - FLeCS-TPs
   - GENIE3
+  - dynGENIE3
   - PEARSON
   - scNODE
   - TrajectoryNet

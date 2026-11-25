@@ -73,6 +73,17 @@ Tree-ensemble regression approach (Random Forests) for gene regulatory network i
 
 ---
 
+### dynGENIE3
+
+[:fontawesome-brands-github: Repository](https://github.com/vahuynh/dynGENIE3){ .md-button .md-button--primary }
+
+Semi-parametric approach for GRN inference from time-series expression data; extends GENIE3 by incorporating temporal information via finite-difference approximation of expression derivatives. Uses Random Forests or Extra-Trees.
+
+- **Publication:** Scientific Reports (2018) DOI:10.1038/s41598-018-21715-0
+- **GRN:** :material-check:{ .green } **Trajectory:** :material-close:{ .red } **Perturbation:** :material-close:{ .red }
+
+---
+
 ### Pearson (coexpression)
 
 Local script: `methods/pearson/inference_pearson.py`

@@ -25,7 +25,7 @@ Your script must produce:
 
 | File | Required | Description |
 |------|:--------:|-------------|
-| `predicted_grn.csv` | If GRN-capable | $N \times N$ adjacency matrix, CSV, genes as row/col names |
+| `<data_id>_GRN.npy` | If GRN-capable | $N \times N$ adjacency matrix, NumPy binary, genes as row/col names |
 | `simulated_adata.h5ad` | If trajectory-capable | AnnData with `.X` containing simulated expression |
 | `.done` | Always | Empty marker file indicating successful completion |
 
@@ -57,9 +57,8 @@ See the full [Method I/O Specification](methods_io.md) for details.
         grn_matrix = np.random.randn(adata.n_vars, adata.n_vars)
 
         # Save GRN
-        pd.DataFrame(grn_matrix, index=adata.var_names,
-                     columns=adata.var_names).to_csv(
-                     os.path.join(args.output_dir, "predicted_grn.csv"))
+        data_id = os.path.splitext(os.path.basename(args.adata))[0]
+        np.save(os.path.join(args.output_dir, f"{data_id}_GRN"), grn_matrix)
 
         # Mark completion
         open(os.path.join(args.output_dir, ".done"), "w").close()
@@ -157,7 +156,7 @@ python post_analysis/compute_metrics.py \
 ## Checklist
 
 - [ ] Entrypoint script follows CLI convention
-- [ ] Produces `predicted_grn.csv` (if GRN-capable)
+- [ ] Produces `<data_id>_GRN.npy` (if GRN-capable)
 - [ ] Produces `simulated_adata.h5ad` (if trajectory-capable)
 - [ ] Creates `.done` marker on completion
 - [ ] Conda environment file in `environments/`

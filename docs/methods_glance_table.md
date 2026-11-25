@@ -6,6 +6,7 @@
 | **FLeCS** | ✅ | ✅ | — |
 | **FLeCS-TPs** | ✅ | ✅ | — |
 | **GENIE3** | ✅ | — | — |
+| **dynGENIE3** | ✅ | — | — |
 | **Pearson (coexpression)** | ✅ | — | — |
 | **scNODE** | — | ✅ | — |
 | **TrajectoryNet** | — | ✅ | — |

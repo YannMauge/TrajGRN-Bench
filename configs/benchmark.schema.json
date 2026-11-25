@@ -64,7 +64,7 @@
           "propertyNames": {
             "enum": [
               "FLeCS", "FLeCS-TPs", "scNODE", "reference_fitting",
-              "CardamomOT", "GENIE3", "PEARSON", "RENGE",
+              "CardamomOT", "GENIE3", "dynGENIE3", "PEARSON", "RENGE",
               "TrajectoryNet", "WaddingtonOT"
             ]
           },

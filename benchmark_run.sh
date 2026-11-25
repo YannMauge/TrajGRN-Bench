@@ -55,7 +55,7 @@ simulation="${3:-simul_replicates}"
 global_run_name="${4:-test_run_3}"
 
 DEFAULT_METHODS_JSON=$(python "$SCRIPT_DIR/utils/methods_registry.py" default-methods-json 2>/dev/null || cat <<EOF
-{"FLeCS":"1","FLeCS-TPs":"1","scNODE":"1","reference_fitting":"1","CardamomOT":"1","GENIE3":"1","PEARSON":"1"}
+{"FLeCS":"1","FLeCS-TPs":"1","scNODE":"1","reference_fitting":"1","CardamomOT":"1","GENIE3":"1","dynGENIE3":"1","PEARSON":"1","RENGE":"1","TrajectoryNet":"1","WaddingtonOT":"1"}
 EOF
 )
 run_methods_json="${5:-$DEFAULT_METHODS_JSON}"
