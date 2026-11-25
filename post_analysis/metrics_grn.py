@@ -2,28 +2,57 @@
 """
 metrics_grn.py — Gene Regulatory Network (GRN) evaluation metrics.
 
-Provides functions to evaluate the similarity/distance between predicted and
-true GRNs: precision, recall, F1-score, AUPRC, Jaccard index, Hamming
-distance, Spearman correlation, and edge overlap.
+All metrics are threshold-free: they score the *ranking* of the predicted
+edge weights, so methods whose scores live on different scales (importances,
+correlations, kinetic parameters…) are compared fairly and no edge is lost
+because it falls just below an arbitrary cut-off.
+
+Ground truth
+    Any real-valued matrix ``true[regulator, target]``: an edge exists where
+    ``true != 0``, its sign is ``sign(true)`` (> 0 activation, < 0 inhibition)
+    and its magnitude is ``|true|``. Binary 0/1, signed (−1/0/+1) and graded
+    (signed strengths) truths are therefore all supported. A truth without any
+    negative entry is treated as *unsigned* and the sign-aware metrics are NaN.
+
+Edge sets (``scope``), self-loops always excluded
+    ``genes``  gene → gene edges only (rows/cols 1..n).
+    ``full``   gene → gene plus Stimulus → gene edges (row 0); the stimulus
+               column (edges *into* the stimulus) is never scored.
+    Index 0 is the stimulus (see METHODS_IO_FORMAT.md). If the prediction is
+    an n×n gene-only matrix while the truth is (n+1)×(n+1), only the ``genes``
+    scope is computed.
+
+Metrics (per scope, columns ``<scope>_<metric>``)
+    edge_auprc          Average precision of |pred| for edge existence.
+    edge_auprc_ratio    edge_auprc / edge density (1 = random ranking).
+    edge_auroc          ROC AUC of |pred| for edge existence.
+    signed_auprc        Mean of AP(activations ranked by +pred) and
+                        AP(inhibitions ranked by −pred): high only if strong
+                        positive scores are activations and strong negative
+                        scores are inhibitions. Unsigned predictions (e.g.
+                        importances ≥ 0) cannot recover inhibitions.
+    signed_auprc_ratio  Same, each AP divided by its class density.
+    sign_accuracy       Fraction of true edges whose predicted sign is right
+                        (a zero prediction counts as wrong).
+    spearman            Spearman correlation between signed pred and signed
+                        truth over all scored entries (uses graded strengths).
+    n_true_edges, n_activations, n_inhibitions, n_scored_pairs.
 
 Usage:
     from metrics_grn import compute_grn_metrics, load_grn
-
-    pred_grn = load_grn("path/to/predicted_grn.npy")
-    true_grn = load_grn("path/to/true_grn.npy")
-    metrics = compute_grn_metrics(pred_grn, true_grn)
+    metrics = compute_grn_metrics(load_grn("pred.npy"), load_grn("true.npy"))
 """
 
 from __future__ import annotations
 
-import logging
+import argparse
 import sys
 import warnings
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import average_precision_score
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score
 
 try:
     from ._common import setup_logging
@@ -35,367 +64,205 @@ for module in ["anndata"]:
 
 logger = setup_logging(__name__)
 
+SCOPES: Tuple[str, ...] = ("genes", "full")
+
 
 class GRNMetricsError(Exception):
     """Custom exception for GRN metrics specific errors."""
 
-    pass
 
+# ---------------------------------------------------------------------------
+# I/O and alignment
+# ---------------------------------------------------------------------------
 
 def load_grn(filepath: str) -> np.ndarray:
     try:
-        grn = np.load(filepath).astype(float)
-        return grn
+        return np.load(filepath).astype(float)
     except Exception as e:
-        logger.error(f"Error loading GRN file: {e}")
-        raise GRNMetricsError(f"Error loading GRN file: {e}")
-
-
-def _binarize_and_mask_diag(grn: np.ndarray, threshold: float) -> np.ndarray:
-    """Convert to boolean via threshold and exclude self-loops (diagonal).
-
-    A strict comparison is used so that the default threshold of 0.0 does not
-    classify exact zero-weight edges as positives.
-    """
-    binary = np.abs(grn) > threshold
-    binary[np.diag_indices_from(binary)] = False
-    return binary
-
-
-def compute_precision_recall_f1(
-    pred_grn: np.ndarray, true_grn: np.ndarray, threshold: float = 0.0
-) -> Dict[str, float]:
-    try:
-        pred_binary = _binarize_and_mask_diag(pred_grn, threshold)
-        true_binary = _binarize_and_mask_diag(true_grn, threshold)
-
-        # Compute confusion matrix elements
-        tp = np.sum(pred_binary & true_binary)  # True positives
-        fp = np.sum(pred_binary & ~true_binary)  # False positives
-        fn = np.sum(~pred_binary & true_binary)  # False negatives
-        tn = np.sum(~pred_binary & ~true_binary)  # True negatives
-
-        # Compute metrics
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1_score = (
-            2 * precision * recall / (precision + recall)
-            if (precision + recall) > 0
-            else 0.0
-        )
-
-        return {
-            "precision": precision,
-            "recall": recall,
-            "f1_score": f1_score,
-            "true_positives": tp,
-            "false_positives": fp,
-            "false_negatives": fn,
-            "true_negatives": tn,
-        }
-
-    except Exception as e:
-        logger.error(f"Error computing precision/recall/F1: {e}")
-        raise GRNMetricsError(f"Error computing precision/recall/F1: {e}")
-
-def compute_jaccard_index(
-    pred_grn: np.ndarray, true_grn: np.ndarray, threshold: float = 0.0
-) -> float:
-    try:
-        pred_binary = _binarize_and_mask_diag(pred_grn, threshold)
-        true_binary = _binarize_and_mask_diag(true_grn, threshold)
-
-        intersection = np.sum(pred_binary & true_binary)
-        union = np.sum(pred_binary | true_binary)
-        return float(intersection / union) if union > 0 else 0.0
-
-    except Exception as e:
-        logger.error(f"Error computing Jaccard index: {e}")
-        raise GRNMetricsError(f"Error computing Jaccard index: {e}")
-
-
-def compute_hamming_distance(
-    pred_grn: np.ndarray, true_grn: np.ndarray, threshold: float = 0.0
-) -> float:
-    try:
-        pred_binary = _binarize_and_mask_diag(pred_grn, threshold)
-        true_binary = _binarize_and_mask_diag(true_grn, threshold)
-        return float(np.sum(pred_binary != true_binary))
-
-    except Exception as e:
-        logger.error(f"Error computing Hamming distance: {e}")
-        raise GRNMetricsError(f"Error computing Hamming distance: {e}")
-
-
-def compute_spearman_correlation(pred_grn: np.ndarray, true_grn: np.ndarray) -> float:
-    try:
-        from scipy.stats import spearmanr  # type: ignore
-
-        off_diag = ~np.eye(pred_grn.shape[0], dtype=bool)
-        pred_flat = pred_grn[off_diag]
-        true_flat = true_grn[off_diag]
-        correlation, _ = spearmanr(pred_flat, true_flat)
-        return float(correlation)
-
-    except ImportError:
-        logger.warning("scipy not available, using numpy correlation")
-        return float(np.corrcoef(pred_flat, true_flat)[0, 1])  # type: ignore
-
-    except Exception as e:
-        logger.error(f"Error computing Spearman correlation: {e}")
-        raise GRNMetricsError(f"Error computing Spearman correlation: {e}")
-
-
-def compute_edge_overlap(
-    pred_grn: np.ndarray, true_grn: np.ndarray, threshold: float = 0.0
-) -> Dict[str, float]:
-    try:
-        pred_binary = _binarize_and_mask_diag(pred_grn, threshold)
-        true_binary = _binarize_and_mask_diag(true_grn, threshold)
-
-        n_edges_pred = int(np.sum(pred_binary))
-        n_edges_true = int(np.sum(true_binary))
-        n_edges_overlap = int(np.sum(pred_binary & true_binary))
-        max_edges = max(n_edges_pred, n_edges_true)
-
-        return {
-            "n_edges_predicted": n_edges_pred,
-            "n_edges_true": n_edges_true,
-            "n_edges_overlap": n_edges_overlap,
-            "edge_overlap_ratio": float(n_edges_overlap / max_edges) if max_edges > 0 else 0.0,
-        }
-
-    except Exception as e:
-        logger.error(f"Error computing edge overlap: {e}")
-        raise GRNMetricsError(f"Error computing edge overlap: {e}")
-
-
-def compute_auprc(pred_grn: np.ndarray, true_grn: np.ndarray) -> float:
-    try:
-        n = pred_grn.shape[0]
-        off_diag = ~np.eye(n, dtype=bool)
-        pred_scores = pred_grn[off_diag]
-        true_labels = true_grn[off_diag].astype(int)
-        return float(average_precision_score(true_labels, pred_scores))
-
-    except Exception as e:
-        logger.error(f"Error computing AUPRC: {e}")
-        raise GRNMetricsError(f"Error computing AUPRC: {e}")
-
-
-def compute_precision_recall_curve(
-    pred_grn: np.ndarray,
-    true_grn: np.ndarray,
-    threshold: float = 0.0,
-) -> Dict[str, np.ndarray]:
-    """Compute precision-recall curve data for a predicted GRN against a
-    ground-truth GRN.
-
-    The ground-truth GRN is binarized using *threshold* (edges with absolute
-    weight ≥ threshold are considered present, excluding self-loops).  The
-    predicted GRN is used as a continuous score.  Precision and recall are
-    computed at all operating points via :func:`sklearn.metrics.precision_recall_curve`.
-
-    Args:
-        pred_grn:  Predicted GRN matrix (continuous scores).
-        true_grn:  Ground-truth GRN matrix (continuous or binary weights).
-        threshold: Binarization threshold for the true GRN.
-
-    Returns:
-        Dict with keys ``"precision"``, ``"recall"``, ``"thresholds"`` (arrays),
-        and ``"auprc"`` (float).
-    """
-    from sklearn.metrics import precision_recall_curve
-
-    try:
-        n = pred_grn.shape[0]
-        off_diag = ~np.eye(n, dtype=bool)
-        pred_scores = np.abs(pred_grn[off_diag])
-        true_binary = (np.abs(true_grn[off_diag]) > threshold).astype(int)
-
-        precision, recall, thresholds = precision_recall_curve(
-            true_binary, pred_scores
-        )
-        auprc = float(average_precision_score(true_binary, pred_scores))
-
-        return {
-            "precision": precision,
-            "recall": recall,
-            "thresholds": thresholds,
-            "auprc": auprc,
-        }
-
-    except Exception as e:
-        logger.error(f"Error computing precision-recall curve: {e}")
-        raise GRNMetricsError(f"Error computing precision-recall curve: {e}")
+        raise GRNMetricsError(f"Error loading GRN file {filepath}: {e}") from e
 
 
 def _squeeze_to_2d(matrix: np.ndarray, name: str) -> np.ndarray:
-    matrix = np.squeeze(matrix)
-    if matrix.ndim != 2:
+    matrix = np.squeeze(np.asarray(matrix, dtype=float))
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         raise GRNMetricsError(
-            f"GRN matrix '{name}' must be 2-D after squeezing, got shape {matrix.shape}"
+            f"GRN matrix '{name}' must be square 2-D after squeezing, got shape {matrix.shape}"
         )
     return matrix
 
 
-def compute_grn_metrics(
-    pred_grn: np.ndarray, true_grn: np.ndarray, simulation: str , quantile: float = 0.9
-) -> Dict[str, Any]:
-    try:
-        # Validate inputs
-        if pred_grn is None or true_grn is None:
-            raise GRNMetricsError("Both pred_grn and true_grn must be provided")
+def align_grns(pred_grn: np.ndarray, true_grn: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool]:
+    """Return ``(pred, true, has_stimulus)`` as aligned square matrices.
 
-        # Squeeze trailing size-1 dimensions (e.g. (9,9,1) -> (9,9))
-        pred_grn = _squeeze_to_2d(pred_grn, "pred_grn")
-        true_grn = _squeeze_to_2d(true_grn, "true_grn")
-
-        if pred_grn.shape != true_grn.shape:
+    Accepted layouts: identical shapes (index 0 = stimulus when the truth has
+    one), or an n×n gene-only prediction against an (n+1)×(n+1) truth, in
+    which case the stimulus row/column of the truth is dropped and only the
+    ``genes`` scope can be scored. Any other mismatch is an error (no silent
+    cropping). Non-finite predicted values are set to 0.
+    """
+    pred = _squeeze_to_2d(pred_grn, "pred_grn")
+    true = _squeeze_to_2d(true_grn, "true_grn")
+    has_stimulus = True
+    if pred.shape != true.shape:
+        if pred.shape[0] == true.shape[0] - 1:
             logger.warning(
-                f"GRN matrices have different shapes: pred={pred_grn.shape}, true={true_grn.shape}. "
-                "Using min shape for computation."
+                f"Predicted GRN {pred.shape} has no stimulus row/column (truth {true.shape}); "
+                "scoring gene→gene edges only."
             )
-            min_n = min(pred_grn.shape[0], true_grn.shape[0])
-            min_m = min(pred_grn.shape[1], true_grn.shape[1])
-            pred_grn = pred_grn[:min_n, :min_m]
-            true_grn = true_grn[:min_n, :min_m]
+            true = true[1:, 1:]
+            has_stimulus = False
+        else:
+            raise GRNMetricsError(
+                f"GRN shape mismatch: pred={pred.shape}, true={true.shape} "
+                "(expected identical shapes, or an n×n prediction for an (n+1)×(n+1) truth)"
+            )
+    n_bad = int(np.sum(~np.isfinite(pred)))
+    if n_bad:
+        logger.warning(f"Predicted GRN has {n_bad} non-finite value(s); treating them as 0.")
+        pred = np.nan_to_num(pred, nan=0.0, posinf=0.0, neginf=0.0)
+    return pred, true, has_stimulus
 
-        # Calculate threshold from quantile if provided
-        if not (0 <= quantile <= 1):
-            raise GRNMetricsError("quantile must be between 0 and 1")
-        # Get absolute values of true GRN (excluding diagonal)
-        true_grn_copy = true_grn.copy()
-        true_grn_copy[np.diag_indices_from(true_grn_copy)] = 0
-        true_grn_abs = np.abs(true_grn_copy)
-        threshold = float(np.quantile(true_grn_abs, quantile))
-        logger.info(f"Calculated threshold from quantile {quantile}: {threshold}")
 
-        # Compute all metrics
-        precision_recall_f1 = compute_precision_recall_f1(pred_grn, true_grn, threshold)
-        jaccard = compute_jaccard_index(pred_grn, true_grn, threshold)
-        hamming = compute_hamming_distance(pred_grn, true_grn, threshold)
-        spearman = compute_spearman_correlation(pred_grn, true_grn)
-        auprc = compute_auprc(pred_grn, true_grn)
-        edge_overlap = compute_edge_overlap(pred_grn, true_grn, threshold)
+def scope_mask(n: int, scope: str, has_stimulus: bool = True) -> np.ndarray:
+    """Boolean mask of the (regulator, target) pairs scored in *scope*."""
+    mask = ~np.eye(n, dtype=bool)  # never score self-loops
+    if not has_stimulus:
+        if scope != "genes":
+            raise GRNMetricsError(f"scope '{scope}' needs a stimulus row (index 0)")
+        return mask
+    mask[:, 0] = False  # edges into the stimulus are meaningless
+    if scope == "genes":
+        mask[0, :] = False
+    elif scope != "full":
+        raise GRNMetricsError(f"Unknown scope '{scope}' (expected one of {SCOPES})")
+    return mask
 
-        # Compile results
-        metrics = {
-            **precision_recall_f1,
-            "jaccard_index": jaccard,
-            "hamming_distance": hamming,
-            "spearman_correlation": spearman,
-            "auprc": auprc,
-            "edge_overlap": edge_overlap,
-        }
 
-        return metrics
+# ---------------------------------------------------------------------------
+# Metrics on flattened (pred, true) vectors
+# ---------------------------------------------------------------------------
 
-    except Exception as e:
-        logger.error(f"Error computing GRN metrics: {e}")
-        raise GRNMetricsError(f"Error computing GRN metrics: {e}")
+def _average_precision(labels: np.ndarray, scores: np.ndarray) -> float:
+    if labels.sum() == 0:
+        return float("nan")
+    return float(average_precision_score(labels, scores))
+
+
+def edge_metrics(pred: np.ndarray, true: np.ndarray) -> Dict[str, float]:
+    """Threshold-free metrics on 1-D arrays of predicted / true edge weights."""
+    exists = (true != 0).astype(int)
+    pos = (true > 0).astype(int)
+    neg = (true < 0).astype(int)
+    n_pairs = int(len(true))
+    out: Dict[str, float] = {
+        "n_scored_pairs": n_pairs,
+        "n_true_edges": int(exists.sum()),
+        "n_activations": int(pos.sum()),
+        "n_inhibitions": int(neg.sum()),
+    }
+
+    # Edge existence (sign ignored)
+    abs_pred = np.abs(pred)
+    density = exists.mean() if n_pairs else float("nan")
+    out["edge_auprc"] = _average_precision(exists, abs_pred)
+    out["edge_auprc_ratio"] = out["edge_auprc"] / density if density else float("nan")
+    out["edge_auroc"] = (
+        float(roc_auc_score(exists, abs_pred)) if 0 < exists.sum() < n_pairs else float("nan")
+    )
+
+    # Sign-aware metrics (only if the truth is signed)
+    if neg.sum() > 0:
+        ap_act = _average_precision(pos, pred)
+        ap_inh = _average_precision(neg, -pred)
+        aps = [a for a in (ap_act, ap_inh) if np.isfinite(a)]
+        ratios = [
+            a / d for a, d in ((ap_act, pos.mean()), (ap_inh, neg.mean()))
+            if np.isfinite(a) and d > 0
+        ]
+        out["signed_auprc"] = float(np.mean(aps)) if aps else float("nan")
+        out["signed_auprc_ratio"] = float(np.mean(ratios)) if ratios else float("nan")
+        out["signed_auprc_activation"] = ap_act
+        out["signed_auprc_inhibition"] = ap_inh
+        true_edges = exists.astype(bool)
+        out["sign_accuracy"] = float(np.mean(np.sign(pred[true_edges]) == np.sign(true[true_edges])))
+    else:
+        for key in ("signed_auprc", "signed_auprc_ratio", "signed_auprc_activation",
+                    "signed_auprc_inhibition", "sign_accuracy"):
+            out[key] = float("nan")
+
+    # Graded, signed agreement
+    if np.ptp(pred) == 0 or np.ptp(true) == 0:
+        out["spearman"] = float("nan")
+    else:
+        from scipy.stats import spearmanr
+        out["spearman"] = float(spearmanr(pred, true)[0])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def compute_grn_metrics(pred_grn: np.ndarray, true_grn: np.ndarray) -> Dict[str, Any]:
+    """Compute all GRN metrics for every scope; keys are ``<scope>_<metric>``."""
+    pred, true, has_stimulus = align_grns(pred_grn, true_grn)
+    if not np.any(true[~np.eye(true.shape[0], dtype=bool)] < 0):
+        logger.info("Ground-truth GRN has no negative entries: treated as unsigned (sign metrics = NaN).")
+    metrics: Dict[str, Any] = {}
+    for scope in SCOPES:
+        if scope != "genes" and not has_stimulus:
+            continue
+        mask = scope_mask(true.shape[0], scope, has_stimulus)
+        for key, value in edge_metrics(pred[mask], true[mask]).items():
+            metrics[f"{scope}_{key}"] = value
+    return metrics
+
+
+def compute_precision_recall_curve(
+    pred_grn: np.ndarray, true_grn: np.ndarray, scope: str = "genes",
+) -> Dict[str, Any]:
+    """Precision-recall curve of |pred| for edge existence (same edge set and
+    scoring as ``<scope>_edge_auprc``)."""
+    pred, true, has_stimulus = align_grns(pred_grn, true_grn)
+    if not has_stimulus:
+        scope = "genes"
+    mask = scope_mask(true.shape[0], scope, has_stimulus)
+    labels = (true[mask] != 0).astype(int)
+    scores = np.abs(pred[mask])
+    precision, recall, thresholds = precision_recall_curve(labels, scores)
+    return {
+        "precision": precision,
+        "recall": recall,
+        "thresholds": thresholds,
+        "auprc": _average_precision(labels, scores),
+        "n_positives": int(labels.sum()),
+        "n_pairs": int(len(labels)),
+    }
 
 
 def evaluate_grn_similarity(
-    pred_grn: np.ndarray, true_grn: np.ndarray, quantile: float = 0.9
+    pred_grn: np.ndarray, true_grn: np.ndarray
 ) -> Tuple[Dict[str, Any], pd.DataFrame]:
-    try:
-        # Compute metrics
-        metrics = compute_grn_metrics(pred_grn, true_grn, quantile=quantile)
-
-        # Create DataFrame for metrics
-        metrics_df = pd.DataFrame([metrics])
-
-        return metrics, metrics_df
-
-    except Exception as e:
-        logger.error(f"Error evaluating GRN similarity: {e}")
-        raise GRNMetricsError(f"Error evaluating GRN similarity: {e}")
+    metrics = compute_grn_metrics(pred_grn, true_grn)
+    return metrics, pd.DataFrame([metrics])
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    if argv is None:
-        argv = sys.argv[1:]
-
+    parser = argparse.ArgumentParser(description="Compute metrics for evaluating a predicted GRN")
+    parser.add_argument("-p", "--pred_grn", required=True, help="Predicted GRN (.npy)")
+    parser.add_argument("-t", "--true_grn", required=True, help="True GRN (.npy)")
+    parser.add_argument("-o", "--output", default=None, help="Optional output CSV")
+    args = parser.parse_args(sys.argv[1:] if argv is None else argv)
     try:
-        # Parse arguments
-        import argparse
-
-        parser = argparse.ArgumentParser(
-            description="Compute metrics for evaluating GRN predictions"
-        )
-        parser.add_argument(
-            "-p",
-            "--pred_grn",
-            required=True,
-            help="Path to predicted GRN file (h5ad format)",
-        )
-        parser.add_argument(
-            "-t",
-            "--true_grn",
-            required=True,
-            help="Path to true GRN file (h5ad format)",
-        )
-        parser.add_argument(
-            "-q",
-            "--quantile",
-            type=float,
-            default=0.9,
-            help="Quantile for threshold calculation from true GRN edges (0-1). If provided, overrides --threshold",
-        )
-        parser.add_argument(
-            "-o", "--output", default=None, help="Output file for metrics (optional)"
-        )
-
-        args = parser.parse_args(argv)
-
-        # Load GRNs
-        logger.info(f"Loading predicted GRN from: {args.pred_grn}")
-        pred_grn = load_grn(args.pred_grn)
-
-        logger.info(f"Loading true GRN from: {args.true_grn}")
-        true_grn = load_grn(args.true_grn)
-
-        # Compute metrics
-        logger.info("Computing GRN metrics...")
-        metrics, metrics_df = evaluate_grn_similarity(
-            pred_grn, true_grn, args.quantile
-        )
-
-        # Print metrics
-        print("\n" + "=" * 60)
-        print("GRN Evaluation Metrics")
-        print("=" * 60)
-        print(f"Precision: {metrics['precision']:.4f}")
-        print(f"Recall: {metrics['recall']:.4f}")
-        print(f"F1 Score: {metrics['f1_score']:.4f}")
-        print(f"AUPRC: {metrics['auprc']:.4f}")
-        print(f"Jaccard Index: {metrics['jaccard_index']:.4f}")
-        print(f"Hamming Distance: {metrics['hamming_distance']:.4f}")
-        print(f"Spearman Correlation: {metrics['spearman_correlation']:.4f}")
-        print(
-            f"Edge Overlap Ratio: {metrics['edge_overlap']['edge_overlap_ratio']:.4f}"
-        )
-        print(f"True Positives: {metrics['true_positives']}")
-        print(f"False Positives: {metrics['false_positives']}")
-        print(f"False Negatives: {metrics['false_negatives']}")
-        print(f"True Negatives: {metrics['true_negatives']}")
-        print("=" * 60)
-
-        # Save to file if specified
-        if args.output:
-            metrics_df.to_csv(args.output, index=False)
-            logger.info(f"Metrics saved to: {args.output}")
-
+        metrics, metrics_df = evaluate_grn_similarity(load_grn(args.pred_grn), load_grn(args.true_grn))
     except GRNMetricsError as e:
-        logger.error(f"GRNMetricsError: {e}")
+        logger.error(str(e))
         sys.exit(1)
-    except KeyboardInterrupt:
-        logger.info("\nInterrupted by user. Cleaning up...")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Error during execution: {e}")
-        sys.exit(1)
+    print("\n".join(f"{k:40s} {v:.4f}" if isinstance(v, float) else f"{k:40s} {v}"
+                    for k, v in metrics.items()))
+    if args.output:
+        metrics_df.to_csv(args.output, index=False)
+        logger.info(f"Metrics saved to: {args.output}")
 
 
 if __name__ == "__main__":

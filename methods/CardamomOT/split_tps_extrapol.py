@@ -53,9 +53,10 @@ def main(argv):
     adata = adata[adata.obs[t_key].isin(train_tps)].copy()
     print(f"[split_tps_extrapol] Loaded data with {adata.n_obs} cells and {adata.n_vars} genes.")
 
-    if adata.uns['simulation'] != None:
-    # Remove the 1st gene (Stimulus)
-        adata = adata[:, 1:].copy()
+    # Remove the benchmark's stimulus variable (CardamomOT adds its own)
+    is_stim = [str(v).lower().startswith('stimulus') for v in adata.var_names]
+    if any(is_stim):
+        adata = adata[:, [not x for x in is_stim]].copy()
 
     # Apply cell subsampling if subsample_train_ids.npy is present
     subsample_ids_path = os.path.join(path_data_folder, "subsample_train_ids.npy")

@@ -1,81 +1,31 @@
-# Containers for method execution
+# Containers
 
-This benchmark supports per-method containers.
-Build one image per method and point the config `execution.container_images` to each image.
+One image per pixi environment used by the methods (`execution.pixi_env` in
+`methods_registry.yaml`), built from `pixi.toml` / `pixi.lock` by
+`containers/docker/Dockerfile`:
 
-**Image definitions are in `methods_registry.yaml`.**  Run `python utils/methods_registry.py container-images` to list them.
-
-## Build all images at once
-
-### Using Make (recommended)
-
-```bash
-# Build all images
-make -f containers/Makefile all
-
-# Build in parallel (e.g. 4 concurrent builds)
-make -f containers/Makefile -j4 all
-
-# Build a single image (target name from registry, e.g. flecs, scnode, ...)
-make -f containers/Makefile flecs
-
-# List images / show help
-make -f containers/Makefile list
-make -f containers/Makefile help
-
-# Remove all built images
-make -f containers/Makefile clean
-```
-
-### Using the shell script
+- build stage: `ghcr.io/prefix-dev/pixi` (pinned by digest) runs
+  `pixi install --locked -e <env>`;
+- runtime stage: `ubuntu:24.04` (pinned by digest) with that environment only,
+  activated by `/entrypoint.sh`.
 
 ```bash
-# Build all images
-bash containers/build_all.sh
-
-# Build only specific images (target names from registry)
-bash containers/build_all.sh flecs scnode
-
-# Force full rebuild (no layer cache)
-bash containers/build_all.sh --no-cache
-
-# Build and push to registry
-bash containers/build_all.sh --push
-
-# Parallel builds (4 at a time)
-bash containers/build_all.sh -j 4
+make -f containers/Makefile list         # targets
+make -f containers/Makefile all          # CPU images for the host platform
+make -f containers/Makefile all-cuda     # + <env>-cuda images (linux/amd64)
+bash containers/build_all.sh --platform linux/amd64 --push flecs   # e.g. for a registry
 ```
 
-## Docker build examples (one at a time)
+`build_all.sh` works with macOS `/bin/bash` 3.2, builds with `docker buildx`,
+prints a summary and exits non-zero if any build failed (logs in a temp dir).
 
-Image definitions come from `methods_registry.yaml`. Use the registry to discover the exact build command:
+The repository is **not** copied into the images: the benchmark mounts it (and
+the data / results folders) at the same paths as on the host and runs the
+container as the host user. GPU runs (`execution.gpu: true`) use the
+`benchmark/<env>-cuda` images with `docker run --gpus all` (or
+`apptainer exec --nv`).
 
-```bash
-python utils/methods_registry.py container-images
-```
-
-Example output (truncated):
-```json
-[
-  {"target": "flecs", "env_file": "environments/flecs_cpu.yml", "env_name": "flecs", "image": "benchmark/flecs"},
-  {"target": "scnode", "env_file": "environments/sc_dynamic.yml", "env_name": "sc_dynamic", "image": "benchmark/scnode"},
-  ...
-]
-```
-
-To build manually from the repository root:
-```bash
-docker build -f containers/docker/Dockerfile --build-arg ENV_FILE=environments/flecs_cpu.yml --build-arg ENV_NAME=flecs -t benchmark/flecs:latest .
-```
-
-## Apptainer
-
-Apptainer can consume the Docker images directly:
-
-```bash
-apptainer build scnode.sif docker-daemon://benchmark/scnode:latest
-apptainer build flecs.sif docker-daemon://benchmark/flecs:latest
-```
-
-Then set the config `execution.method_runners` values to `apptainer` and point
-`execution.container_images` at the `.sif` files.
+Apptainer: convert an image with
+`apptainer build flecs.sif docker-daemon://benchmark/flecs:latest` and set
+`execution.container_engine: apptainer` and `container_images` to the `.sif`
+paths.

@@ -6,6 +6,10 @@ import anndata as ad
 import scipy
 
 from optim.running import constructscNODEModel, scNODETrainWithPreTrain, scNODEPredict
+from pathlib import Path
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _common import seed_everything  # noqa: E402
 import os
 import sys, getopt
 import time
@@ -18,6 +22,8 @@ def main(argv):
     t_key = 'timepoint'
     inputfile = ''
     outputfolder = ''
+    output_mode = 'full_test'  # default when -u is not passed
+    seed_everything(0)
     try:
         opts, args = getopt.getopt(argv, "hi:o:u:", ["input=", "outputfolder=", "output_mode="])
     except getopt.GetoptError as err:
@@ -124,10 +130,14 @@ def main(argv):
             return int(np.where(np.unique(adata.obs[t_key]) == tp_value)[0][0])
 
         # Determine which timepoints to simulate based on output_mode
+        drop_first = False
         if output_mode == 'full_test':
-            # Simulate test timepoints starting from the last training timepoint
-            pred_tps = test_tps_torch
+            # Simulate test timepoints starting from the last training timepoint:
+            # scNODE integrates from tps[0], so the start time is prepended and
+            # its (reconstructed) slice dropped afterwards.
             start_tp_val = train_tps_arr[:, 1][-1]
+            pred_tps = torch.cat([torch.FloatTensor([float(start_tp_val)]), test_tps_torch.float()])
+            drop_first = True
             start_cells = traj_data[tp_to_traj_idx(start_tp_val)]
         elif output_mode == 'full_train':
             # Simulate all training timepoints starting from the first timepoint
@@ -152,6 +162,12 @@ def main(argv):
 
         all_recon_obs = scNODEPredict(latent_ode_model, start_cells, pred_tps, n_cells=n_sim_cells)
         all_recon_obs = np.maximum(all_recon_obs, 0) #Band-aid to avoid lognorm crash in case of bad model
+        # scNODEPredict returns (# cells, # tps, # genes): make it timepoint-major
+        # so that the reshape below matches the per-timepoint time labels.
+        all_recon_obs = np.transpose(all_recon_obs, (1, 0, 2))
+        if drop_first:
+            all_recon_obs = all_recon_obs[1:]
+            pred_tps = pred_tps[1:]
         list_times_pred = []
         for i in pred_tps.cpu().numpy():
             list_times_pred += [i] * n_sim_cells
@@ -167,7 +183,7 @@ def main(argv):
             pred_train_data = pred_adata
 
         pred_train_data.uns['runtime'] = time.time() - start_runtime
-        if adata.uns['simulation'] != None:
+        if adata.uns.get('simulation') is not None:
         # Remove the 1st gene (Stimulus)
             pred_train_data = pred_train_data[:, 1:].copy()
         pred_train_data.write_h5ad(outputfolder+save_path_prefix+'_adata.h5ad')

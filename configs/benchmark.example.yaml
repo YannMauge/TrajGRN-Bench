@@ -31,6 +31,10 @@ simulation:
   replicates_number: 1
   simulator_backend: harissa
   simul_ko_genes: all
+  # Optional, shared by all simulators (defaults: 1000 cells, 10 timepoints 0..90, seed 0)
+  # n_cells: 1000
+  # n_time_bins: 10
+  # seed: 0
 
 benchmark:
   train_data: future
@@ -57,11 +61,17 @@ benchmark:
 # defined in methods_registry.yaml.  You only need to list overrides here.
 # Omitted keys fall back to the registry defaults.
 execution:
-  runner_env: benchmark_runner
-  # default_runner: conda          # override the default runner
-  # conda_envs:                    # override per-method conda envs
-  #   FLeCS: my_custom_flecs_env
-  # container_images:              # override per-method container images
+  # Orchestration (simulators, splits, metrics) runs in the pixi env "runner"
+  # (pixi.toml). Legacy conda: runner_tool: conda, runner_env: benchmark_runner
+  runner_tool: pixi
+  # gpu: false                     # true: CUDA envs/images + docker --gpus all
+  # Methods: runner, pixi env and image per method come from
+  # methods_registry.yaml (default runner: docker, images benchmark/<pixi_env>).
+  # Omitted keys fall back to the registry defaults.
+  # default_runner: pixi           # pixi | docker | apptainer | conda
+  # method_runners:                # per-method override
+  #   RENGE: pixi
+  # pixi_envs:                     # per-method pixi env override
+  #   FLeCS: flecs
+  # container_images:              # per-method image override
   #   scNODE: myrepo/scnode:latest
-  # method_runners:                # override per-method runner
-  #   reference_fitting: docker

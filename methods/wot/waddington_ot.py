@@ -106,6 +106,7 @@ def main(argv):
     inputfile = ""
     outputfolder = ""
     output_mode = "full_test"
+    np.random.seed(0)  # wot.ot.interpolate_with_ot samples cells with numpy's global RNG
 
     try:
         opts, _ = getopt.getopt(argv, "hi:o:u:", ["input=", "outputfolder=", "output_mode="])

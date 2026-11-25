@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import getopt
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 
@@ -19,13 +19,25 @@ class SimulatorCommonConfig:
     n_time_bins: int = 20
     stimulus_value: int = 100
     degradation_rates: tuple[float, float] = (0.75, 0.15)
+    seed: int = 0
+    # Simulator-specific options (e.g. BoolODE --sim_time), as strings.
+    extra: Dict[str, str] = field(default_factory=dict)
 
     @property
     def gene_names(self) -> List[str]:
         return [f"Gene{i}" for i in range(self.n_genes)]
 
+    def time_labels(self, total_time: int = 100) -> np.ndarray:
+        """Timepoint labels shared by all simulators: n_time_bins evenly
+        spaced integers starting at 0 (0, 10, …, 90 for 10 bins)."""
+        return np.arange(self.n_time_bins) * (total_time // self.n_time_bins)
+
+    def run_seed(self, run_index: int) -> int:
+        """Reproducible, distinct seed for replicate *run_index* (1-based)."""
+        return int(self.seed) * 1000 + int(run_index)
+
     def build_time_vector(self, total_time: int = 100) -> np.ndarray:
-        bins = np.arange(0, total_time, total_time // self.n_time_bins)
+        bins = self.time_labels(total_time)
         edges = np.linspace(0, self.n_cells, self.n_time_bins + 1, dtype=int)
         time = np.zeros(self.n_cells, dtype=int)
         for idx, value in enumerate(bins):
@@ -48,9 +60,14 @@ class BenchmarkGRNConfig:
         )
 
     def build_true_interaction_matrix(self) -> np.ndarray:
-        inter = np.zeros((self.n_genes + 1, self.n_genes + 1), dtype=int)
-        for regulator, target, _ in self.harissa_edges:
-            inter[regulator, target] = 1
+        """Signed ground-truth GRN, shape (n_genes+1, n_genes+1).
+
+        ``inter[regulator, target]`` holds the signed interaction strength
+        (> 0 activation, < 0 inhibition, 0 no edge); index 0 is the stimulus.
+        """
+        inter = np.zeros((self.n_genes + 1, self.n_genes + 1), dtype=float)
+        for regulator, target, strength in self.harissa_edges:
+            inter[regulator, target] = float(strength)
         return inter
 
     def build_sergio_inputs(self, n_time_bins: int) -> tuple[List[List[float]], List[List[float]]]:
@@ -159,10 +176,46 @@ _BENCHMARK_GRN_BY_GENES = {
 }
 
 
-def get_benchmark_grn(n_genes: int) -> BenchmarkGRNConfig:
-    grn = _BENCHMARK_GRN_BY_GENES.get(n_genes)
+# SERGIO cannot simulate cycles or self-loops (Dibaeinia & Sinha 2020), so it
+# gets its own acyclic network with the same entry point (stimulus -> Gene0, a
+# master regulator whose production rate ramps along the differentiation
+# chain), the same number of genes and a mix of activations / inhibitions,
+# built from motifs SERGIO handles: incoherent FFL (Gene0 -> Gene1 -| Gene2,
+# Gene0 -> Gene2), convergent regulation (Gene1 -> Gene3 |- Gene2), coherent FFL
+# (Gene1 -> Gene3 -> Gene4, Gene1 -> Gene4), mixed convergence on Gene6 and a
+# cascade to Gene7. Strengths are SERGIO interaction strengths K (1-5 as in the
+# SERGIO demos; sign = activation / repression). Nodes: 0 = stimulus,
+# k = Gene{k-1}.
+_SERGIO_GRN_BY_GENES = {
+    8: BenchmarkGRNConfig(
+        n_genes=8,
+        basal=(0.0,) * 8,  # unused by SERGIO (master-regulator rates instead)
+        harissa_edges=(
+            (0, 1, 3.0),
+            (1, 2, 4.0),
+            (1, 3, 3.0),
+            (2, 3, -3.0),
+            (2, 4, 4.0),
+            (3, 4, -2.0),
+            (2, 5, 2.0),
+            (4, 5, 3.0),
+            (3, 6, 4.0),
+            (5, 7, -3.0),
+            (6, 7, 3.0),
+            (7, 8, 4.0),
+            (5, 8, -2.0),
+        ),
+    ),
+}
+
+
+def get_benchmark_grn(n_genes: int, simulator: str = "default") -> BenchmarkGRNConfig:
+    """Benchmark GRN for *n_genes*; ``simulator="sergio"`` returns the
+    acyclic SERGIO-specific network, any other value the shared network."""
+    table = _SERGIO_GRN_BY_GENES if simulator.lower() == "sergio" else _BENCHMARK_GRN_BY_GENES
+    grn = table.get(n_genes)
     if grn is None:
-        raise ValueError(f"Benchmark GRN is not defined for n_genes={n_genes}")
+        raise ValueError(f"Benchmark GRN is not defined for n_genes={n_genes} (simulator={simulator})")
     return grn
 
 
@@ -188,14 +241,25 @@ def parse_common_cli(
     default_n_cells: int = 3000,
     default_n_genes: int = 8,
     default_n_time_bins: int = 10,
+    default_seed: int = 0,
+    extra_options: Sequence[str] = (),
 ) -> SimulatorCommonConfig:
+    """Common simulator CLI.
+
+    -o/--output_folder (required), -a/--adata_folder, -n/--n_runs,
+    [-k/--ko_genes], --n_cells, --n_time_bins, --seed, and any
+    simulator-specific ``--<name>`` listed in *extra_options*.
+    """
     output_folder: Optional[Path] = None
     adata_folder: Optional[Path] = None
     n_runs = 2
     ko_genes = "all"
+    n_cells, n_time_bins, seed = default_n_cells, default_n_time_bins, default_seed
+    extra: Dict[str, str] = {}
 
     short_opts = "ho:a:n:k:" if include_ko else "ho:a:n:"
-    long_opts = ["output_folder=", "adata_folder=", "n_runs="]
+    long_opts = ["output_folder=", "adata_folder=", "n_runs=", "n_cells=", "n_time_bins=", "seed="]
+    long_opts += [f"{name}=" for name in extra_options]
     if include_ko:
         long_opts.append("ko_genes=")
 
@@ -209,18 +273,30 @@ def parse_common_cli(
             n_runs = int(arg)
         elif include_ko and opt in ("-k", "--ko_genes"):
             ko_genes = str(arg)
+        elif opt == "--n_cells":
+            n_cells = int(arg)
+        elif opt == "--n_time_bins":
+            n_time_bins = int(arg)
+        elif opt == "--seed":
+            seed = int(arg)
+        elif opt.startswith("--") and opt[2:] in extra_options:
+            extra[opt[2:]] = str(arg)
 
     if output_folder is None:
         raise ValueError("--output_folder is required")
+    if n_time_bins < 2 or n_cells < n_time_bins:
+        raise ValueError(f"Need n_time_bins >= 2 and n_cells >= n_time_bins (got {n_time_bins}, {n_cells})")
 
     return SimulatorCommonConfig(
         output_folder=output_folder,
         adata_folder=adata_folder,
         n_runs=n_runs,
         ko_genes=ko_genes,
-        n_cells=default_n_cells,
+        n_cells=n_cells,
         n_genes=default_n_genes,
-        n_time_bins=default_n_time_bins,
+        n_time_bins=n_time_bins,
+        seed=seed,
+        extra=extra,
     )
 
 
@@ -264,9 +340,28 @@ def build_dyngen_backbone_spec(n_genes: int) -> Optional[str]:
     return ";".join(parts)
 
 
-def write_shared_files(output_folder: Path, gene_names: Sequence[str], degradation_rates: tuple[float, float]) -> None:
+def clear_previous_outputs(output_folder: Path) -> None:
+    """Remove data files and ground truths of a previous simulation, so that
+    leftovers (e.g. more replicates or KO files of an earlier run) are never
+    converted together with the new data."""
+    for pattern, folder in (("data_*.txt", output_folder), ("inter_*.npy", output_folder.parent / "True")):
+        if folder.is_dir():
+            for f in folder.glob(pattern):
+                f.unlink()
+
+
+def write_shared_files(output_folder: Path, gene_names: Sequence[str], degradation_rates) -> None:
+    """Write ``panel_genes.txt`` and ``Rates/degradation_rates.txt``.
+
+    *degradation_rates*: the simulator's own mRNA / protein degradation rates
+    **in timepoint-label units** (``(d0, d1)`` for all variables, or an array
+    of shape (n_genes + 1, 2) with the stimulus first), copied to
+    ``adata.var['d0' / 'd1']`` and used as priors by CardamomOT. ``None`` when
+    the simulator does not define such rates (no file is written, so methods
+    fall back to their own priors, e.g. CardamomOT's half-life table).
+    """
     rates_dir = output_folder / "Rates"
-    rates_dir.mkdir(parents=True, exist_ok=True)
+    rates_file = rates_dir / "degradation_rates.txt"
 
     panel_gene = np.array(
         [["0"] + [str(i + 1) for i in range(len(gene_names))], ["Stimulus"] + list(gene_names)],
@@ -274,5 +369,14 @@ def write_shared_files(output_folder: Path, gene_names: Sequence[str], degradati
     ).T
     np.savetxt(output_folder / "panel_genes.txt", panel_gene, fmt="%s", delimiter="\t")
 
-    degradation = np.tile(np.array([degradation_rates], dtype=float), (len(gene_names) + 1, 1))
-    np.savetxt(rates_dir / "degradation_rates.txt", degradation, fmt="%1.3f", delimiter="\t")
+    if degradation_rates is None:
+        if rates_file.exists():
+            rates_file.unlink()
+        return
+    rates_dir.mkdir(parents=True, exist_ok=True)
+    rates = np.asarray(degradation_rates, dtype=float)
+    if rates.ndim == 1:
+        rates = np.tile(rates[None, :], (len(gene_names) + 1, 1))
+    if rates.shape != (len(gene_names) + 1, 2):
+        raise ValueError(f"degradation rates must have shape ({len(gene_names) + 1}, 2), got {rates.shape}")
+    np.savetxt(rates_file, rates, fmt="%.6g", delimiter="\t")

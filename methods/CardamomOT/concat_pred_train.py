@@ -12,8 +12,11 @@ def main(argv):
     t_key = 'timepoint'
     inputfile = ''
     ko_output_genes = 'none'
+    perturbation_training = False
+    output_mode = 'full_test'
+    np.random.seed(0)
     try:
-        opts, args = getopt.getopt(argv, "hi:a:k:p:", ["ifile=","adata_file=","ko_genes=","perturbation_training="])
+        opts, args = getopt.getopt(argv, "hi:a:k:p:u:", ["ifile=","adata_file=","ko_genes=","perturbation_training=","output_mode="])
     except getopt.GetoptError:
         sys.exit(2)
     for opt, arg in opts:
@@ -25,6 +28,8 @@ def main(argv):
             ko_output_genes = str(arg)
         if opt in ("-p", "--perturbation_training"):
             perturbation_training = arg.lower() == 'true'
+        if opt in ("-u", "--output_mode"):
+            output_mode = str(arg)
     
     p = '{}/'.format(inputfile)  # Name of the file where are the data
 
@@ -44,9 +49,19 @@ def main(argv):
     adata_train.obs['time'] = adata_train.obs[t_key]
     start_runtime = adata.uns['runtime']
 
-    adata_sim = ad.read_h5ad(p+'CardamomOT/adata_sim_stim1.0_prior1.0.h5ad')
+    adata_sim = ad.read_h5ad(p+'cardamomOT/adata_sim_stim1.0_prior1.0.h5ad')
     adata_sim.obs[t_key] = adata_sim.obs['time']
-    adata_sim = adata_sim[adata_sim.obs[t_key].isin(test_tps[:, 1])].copy()
+    # Simulated timepoints to keep, per output_mode (see METHODS_IO_FORMAT.md):
+    #   full_test  -> test timepoints (+ the real training cells, below)
+    #   full_train -> training timepoints (simulated only)
+    #   full_full  -> training + test timepoints (simulated only)
+    if output_mode == 'full_train':
+        keep_tps = train_tps[:, 1]
+    elif output_mode == 'full_full':
+        keep_tps = np.concatenate([train_tps[:, 1], test_tps[:, 1]])
+    else:
+        keep_tps = test_tps[:, 1]
+    adata_sim = adata_sim[adata_sim.obs[t_key].isin(keep_tps)].copy()
     if perturbation_training:
         if "dataset_id" in adata_sim.obs.columns:
             if len(np.unique(adata_sim.obs["dataset_id"])) > 1:
@@ -64,11 +79,11 @@ def main(argv):
             if adata_sim_resampled:
                 adata_sim = ad.concat(adata_sim_resampled)
 
-    sim_train_data = ad.concat((adata_sim,adata_train))
+    sim_train_data = ad.concat((adata_sim, adata_train)) if output_mode == 'full_test' else adata_sim
     sim_train_data.uns['runtime'] = time.time() - start_runtime
 
     ad.settings.allow_write_nullable_strings = True
-    sim_train_data.write_h5ad(p+'CardamomOT/adata_sim_final.h5ad')
+    sim_train_data.write_h5ad(p+'cardamomOT/adata_sim_final.h5ad')
 
 if __name__ == "__main__":
    main(sys.argv[1:]) 

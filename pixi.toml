@@ -1,0 +1,224 @@
+# =============================================================================
+# TrajGRN-Bench environments (pixi workspace)
+# =============================================================================
+# One lock file (pixi.lock) for all environments and platforms:
+#   linux-64, linux-aarch64 (Docker on Apple Silicon / ARM servers), osx-arm64.
+#   Intel macOS (osx-64) is not supported.
+# conda-forge only; PyPI only for packages missing from conda-forge (locked too).
+#
+#   pixi install -e <env>              create an environment locally
+#   pixi run -e <env> python ...       run in it
+#   pixi run -e runner install-dyngen  (once) R packages for the dyngen simulator
+#
+# Environment  -> methods (see methods_registry.yaml, execution.pixi_env):
+#   runner             orchestration, metrics, Harissa/BoolODE/SERGIO/dyngen simulators
+#   baselines          GENIE3, dynGENIE3, PEARSON
+#   cardamom[-cuda]    CardamomOT
+#   flecs[-cuda]       FLeCS, FLeCS-TPs
+#   scnode[-cuda]      scNODE
+#   trajectorynet[-cuda] TrajectoryNet, WaddingtonOT
+#   reference-fitting[-cuda] reference_fitting
+#   renge              RENGE (JAX, CPU)
+#   docs               mkdocs site (pixi run -e docs docs-build)
+# *-cuda variants: linux-64 only, PyTorch built with CUDA 12 (Docker GPU images,
+# optional GPU runs).
+# =============================================================================
+
+[workspace]
+name = "trajgrn-bench"
+channels = ["conda-forge"]
+platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
+
+# ── Shared scientific stack ──────────────────────────────────────────────────
+[feature.sci.dependencies]
+numpy = "*"
+pandas = "*"
+scipy = "*"
+scikit-learn = "*"
+anndata = "*"
+scanpy = "*"
+matplotlib-base = "*"
+
+# ── Orchestration, metrics and simulators ────────────────────────────────────
+[feature.runner.dependencies]
+python = "3.10.*"
+seaborn = "*"
+umap-learn = "*"
+pot = "*"
+networkx = "*"
+tqdm = "*"
+jq = "*"
+pyyaml = "*"
+jsonschema = "*"
+# R for the dyngen simulator (dyngen itself: `pixi run -e runner install-dyngen`)
+r-base = ">=4.2"
+r-tibble = "*"
+r-matrix = "*"
+r-dplyr = "*"
+r-purrr = "*"
+r-tidyr = "*"
+r-rcpp = "*"
+r-rcpparmadillo = "*"
+r-assertthat = "*"
+r-crayon = "*"
+r-pbapply = "*"
+r-readr = "*"
+r-igraph = "*"
+r-remotes = "*"
+c-compiler = "*"
+cxx-compiler = "*"
+fortran-compiler = "*"
+make = "*"
+
+[feature.runner.pypi-dependencies]
+harissa = "==3.0.8"
+geomloss = "*"
+
+[feature.runner.tasks]
+# dyngen and the dynverse packages are not on conda-forge: install them from a
+# dated CRAN snapshot (Posit Package Manager) so that versions are frozen.
+install-dyngen = "Rscript -e 'options(repos = c(CRAN = \"https://packagemanager.posit.co/cran/2026-11-01\")); install.packages(\"dyngen\", Ncpus = 4); library(dyngen)'"
+
+# ── GENIE3 / dynGENIE3 / Pearson (light, no torch) ───────────────────────────
+[feature.baselines.dependencies]
+python = "3.12.*"
+
+# ── CardamomOT ───────────────────────────────────────────────────────────────
+[feature.cardamom.dependencies]
+python = "3.12.*"
+joblib = "*"
+numba = "*"
+alive-progress = "*"
+umap-learn = "*"
+torchdiffeq = "*"
+pot = "*"
+questionary = "*"
+pyyaml = "*"
+scvelo = "*"
+networkx = "*"
+seaborn = "*"
+pytorch = "*"
+
+[feature.cardamom.pypi-dependencies]
+harissa = "==3.0.8"   # same version as the simulator
+
+# ── FLeCS ────────────────────────────────────────────────────────────────────
+[feature.flecs.dependencies]
+python = "3.13.*"
+biopython = ">=1.79"
+torchdiffeq = ">=0.2.2"
+networkx = "==2.8.8"
+anndata = "==0.11.4"
+scanpy = ">=1.11.2"
+pytorch = "*"
+pytorch_scatter = "*"
+pytorch_geometric = "*"
+pot = "*"
+scvelo = "*"
+
+[feature.flecs.pypi-dependencies]
+geomloss = "*"
+mygene = "*"
+
+# ── scNODE (upstream used Python 3.8, unavailable on osx-arm64) ──────────────
+[feature.scnode.dependencies]
+python = "3.10.*"
+pytorch = "*"
+torchdiffeq = "*"
+torchsde = ">=0.2.5"
+boltons = ">=23.0.0"
+
+[feature.scnode.pypi-dependencies]
+geomloss = "*"
+
+# ── TrajectoryNet + Waddington-OT ────────────────────────────────────────────
+[feature.trajectorynet.dependencies]
+python = "3.10.*"
+numpy = "<2"        # TrajectoryNet / wot use np.float_ (removed in numpy 2)
+pytorch = "*"
+pot = "*"
+# torchdiffeq comes from PyPI: TrajectoryNet 0.2.4 pins torchdiffeq==0.0.1
+scanpy = ">=1.9,<1.10"
+
+[feature.trajectorynet.pypi-dependencies]
+TrajectoryNet = "*"
+wot = "*"
+
+# ── Reference fitting (pins from its published environment) ──────────────────
+[feature.reference-fitting.dependencies]
+python = "3.9.*"
+numba = "==0.60.0"
+numpy = "1.26.*"
+pandas = "==2.3.0"
+pytorch = ">=2.0.0"
+scanpy = "==1.10.3"
+scikit-learn = "==1.6.1"
+scipy = "==1.13.1"
+pot = "*"
+seaborn = "*"
+umap-learn = "*"
+matplotlib-base = "3.7.*"
+scvelo = "*"
+
+[feature.reference-fitting.pypi-dependencies]
+harissa = "==3.0.8"
+geomloss = "*"
+
+# ── RENGE (JAX, CPU) ─────────────────────────────────────────────────────────
+[feature.renge.dependencies]
+python = "3.13.*"
+numpy = "==2.2.3"
+pandas = "==2.2.3"
+scipy = "==1.15.2"
+scikit-learn = "==1.6.1"
+statsmodels = "==0.14.4"
+optuna = "==4.2.1"
+tqdm = "==4.67.1"
+
+[feature.renge.pypi-dependencies]
+renge = "==0.0.5"   # PyPI wheel by the RENGE author (github.com/masastat/RENGE)
+# jax/jaxlib from Google's PyPI wheels: the conda-forge jaxlib 0.4.35 linux-aarch64
+# build emits illegal instructions on some ARM CPUs (SIGILL in RENGE); RENGE pins 0.4.35.
+jax = "==0.4.35"
+jaxlib = "==0.4.35"
+
+# ── Documentation (mkdocs build used by the deploy-docs workflow) ────────────
+[feature.docs.dependencies]
+python = "3.12.*"
+mkdocs = "1.6.*"
+mkdocs-material = "*"
+mkdocstrings-python = "*"
+mkdocs-gen-files = "*"
+pyyaml = "*"
+pandas = "*"
+tabulate = "*"
+
+[feature.docs.tasks]
+docs-build = { cmd = "mkdocs build --strict", env = { DISABLE_MKDOCS_2_WARNING = "true" } }
+docs-serve = "mkdocs serve"
+
+# ── CUDA 12 PyTorch (linux-64 only) ──────────────────────────────────────────
+[feature.cuda]
+platforms = ["linux-64"]
+system-requirements = { cuda = "12" }  # deprecated syntax in pixi 0.84 (warning only)
+
+[feature.cuda.dependencies]
+pytorch-gpu = "*"
+cuda-version = "12.*"
+
+# ── Environments ─────────────────────────────────────────────────────────────
+[environments]
+runner = { features = ["sci", "runner"], no-default-feature = true }
+baselines = { features = ["sci", "baselines"], no-default-feature = true }
+cardamom = { features = ["sci", "cardamom"], no-default-feature = true }
+cardamom-cuda = { features = ["sci", "cardamom", "cuda"], no-default-feature = true }
+flecs = { features = ["sci", "flecs"], no-default-feature = true }
+flecs-cuda = { features = ["sci", "flecs", "cuda"], no-default-feature = true }
+scnode = { features = ["sci", "scnode"], no-default-feature = true }
+scnode-cuda = { features = ["sci", "scnode", "cuda"], no-default-feature = true }
+trajectorynet = { features = ["sci", "trajectorynet"], no-default-feature = true }
+trajectorynet-cuda = { features = ["sci", "trajectorynet", "cuda"], no-default-feature = true }
+reference-fitting = { features = ["sci", "reference-fitting"], no-default-feature = true }
+reference-fitting-cuda = { features = ["sci", "reference-fitting", "cuda"], no-default-feature = true }
+renge = { features = ["sci", "renge"], no-default-feature = true }
+docs = { features = ["docs"], no-default-feature = true }

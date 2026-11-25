@@ -5,7 +5,7 @@ TrajGRN-Bench's Python API is organized into several modules:
 | Module | Description |
 |--------|-------------|
 | [`utils`](utils.md) | Utility functions and the methods registry API |
-| `simulator` | Simulation drivers (Harissa, BoolODE, SERGIO) — see [Development Guide](../development.md) |
+| `simulator` | Simulation drivers (Harissa, BoolODE, SERGIO, dyngen) — see [Development Guide](../development.md) |
 | [`post_analysis`](post_analysis.md) | Metrics computation and visualization |
 
 ## Key Classes
@@ -53,5 +53,5 @@ metrics = compute_all_metrics(
 ## Module Index
 
 - [utils](utils.md) — `methods_registry`, `utils`
-- `simulator` — `common_config`, `Harissa`, `BoolODE`, `SERGIO` (see [Development Guide](../development.md))
+- `simulator` — `common_config`, `Harissa`, `BoolODE`, `SERGIO`, `dyngen` (see [Development Guide](../development.md))
 - [post_analysis](post_analysis.md) — `compute_metrics`, `metrics_grn`, `metrics_cells`, `visualizations`

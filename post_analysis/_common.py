@@ -20,6 +20,9 @@ from typing import Dict, Iterator, List, Optional, Tuple
 
 PERTURBATION_TRAINING_SUFFIX: str = "_perturbation_training"
 GRN_TRUE_FOLDER: str = "GRN_true"
+# Per-run folder holding the method inputs (data + split), not a method.
+INPUTS_FOLDER: str = "inputs"
+NON_METHOD_DIRS = {GRN_TRUE_FOLDER, INPUTS_FOLDER}
 
 # ---------------------------------------------------------------------------
 # Compiled regex patterns
@@ -66,7 +69,11 @@ def discover_replicates(folder: Path, file_re: re.Pattern) -> Dict[tuple, Path]:
         m = file_re.match(f.name)
         if m:
             result[(int(m.group(1)), m.group(2), bool(m.group(3)))] = f
-    return result
+    # Ordered by (replicate, perturbation, perturbation_training) with WT
+    # (perturbation None) first. Keys mix None and str, so never sort them
+    # with plain sorted(): iterate over this dict directly.
+    ordered = sorted(result, key=lambda k: (k[0], k[1] is not None, k[1] or "", k[2]))
+    return {k: result[k] for k in ordered}
 
 
 def is_leave_one_out_structure(run_dir: Path) -> bool:
@@ -86,7 +93,7 @@ def is_leave_one_out_structure(run_dir: Path) -> bool:
     # run_N and not GRN_true) at the top level.
     non_fold_dirs = [
         d for d in children
-        if d.is_dir() and not RUN_FOLD_RE.match(d.name) and d.name != GRN_TRUE_FOLDER
+        if d.is_dir() and not RUN_FOLD_RE.match(d.name) and d.name not in NON_METHOD_DIRS
     ]
     return len(non_fold_dirs) == 0
 
@@ -126,11 +133,11 @@ def iter_method_dirs(
                 continue
             fold = int(m.group(1))
             for method_dir in sorted(fold_dir.iterdir()):
-                if method_dir.is_dir() and method_dir.name != GRN_TRUE_FOLDER:
+                if method_dir.is_dir() and method_dir.name not in NON_METHOD_DIRS:
                     yield (method_dir.name, method_dir, fold)
     else:
         for method_dir in sorted(run_dir.iterdir()):
-            if method_dir.is_dir() and method_dir.name != GRN_TRUE_FOLDER:
+            if method_dir.is_dir() and method_dir.name not in NON_METHOD_DIRS:
                 yield (method_dir.name, method_dir, None)
 
 

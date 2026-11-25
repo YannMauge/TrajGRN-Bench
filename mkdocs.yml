@@ -84,7 +84,8 @@ markdown_extensions:
   - pymdownx.snippets:
       base_path:
         - docs
-      check_paths: false
+        - .
+      check_paths: true
   - pymdownx.tabbed:
       alternate_style: true
   - pymdownx.emoji:

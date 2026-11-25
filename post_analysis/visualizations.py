@@ -19,7 +19,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 os.environ.setdefault("MPLBACKEND", "Agg")
 import matplotlib  # noqa: E402
@@ -46,7 +46,7 @@ try:
         resolve_benchmark_path,
         setup_logging,
     )
-    from .metrics_cells import read_adata  # noqa: E402
+    from .metrics_cells import cell_times, read_adata  # noqa: E402
 except ImportError:
     from _common import (  # noqa: E402  # type: ignore[no-redef]
         ADATA_FILE_RE,
@@ -60,7 +60,7 @@ except ImportError:
         resolve_benchmark_path,
         setup_logging,
     )
-    from metrics_cells import read_adata  # noqa: E402  # type: ignore[no-redef]
+    from metrics_cells import cell_times, read_adata  # noqa: E402  # type: ignore[no-redef]
 
 logger = setup_logging(__name__)
 
@@ -75,25 +75,26 @@ _UMAP_DOT_ALPHA: float = 0.6
 _HEATMAP_FIGSIZE: Tuple[int, int] = (14, 5)
 
 # Metric definitions: (column_name, display_label)
+# (see metrics_grn / metrics_cells for definitions)
 _GRN_METRICS: List[Tuple[str, str]] = [
-    ("precision", "Precision"),
-    ("recall", "Recall"),
-    ("f1_score", "F1 Score"),
-    ("auprc", "AUPRC"),
-    ("jaccard_index", "Jaccard Index"),
-    ("spearman_correlation", "Spearman Corr."),
-    ("hamming_distance", "Hamming Distance"),
-    ("edge_overlap_edge_overlap_ratio", "Edge Overlap Ratio"),
+    ("genes_edge_auprc_ratio", "Edge AUPRC / random (gene→gene)"),
+    ("genes_signed_auprc_ratio", "Signed AUPRC / random (gene→gene)"),
+    ("genes_edge_auroc", "Edge AUROC (gene→gene)"),
+    ("genes_sign_accuracy", "Sign accuracy (gene→gene)"),
+    ("genes_spearman", "Signed Spearman (gene→gene)"),
+    ("full_edge_auprc_ratio", "Edge AUPRC / random (with Stimulus)"),
+    ("full_signed_auprc_ratio", "Signed AUPRC / random (with Stimulus)"),
 ]
 
 _CELL_METRICS: List[Tuple[str, str]] = [
-    ("wasserstein_distance", "Wasserstein Distance"),
-    ("pca_wasserstein_distance", "PCA Wasserstein Distance"),
-    ("kl_divergence", "KL Divergence"),
-    ("jensen_shannon_divergence", "Jensen-Shannon Divergence"),
-    ("gene_gene_correlation", "Gene-Gene Correlation"),
-    ("top_de_genes_overlap", "Top DE Genes Overlap"),
-    ("adjusted_rand_index", "Adjusted Rand Index"),
+    ("wasserstein_log", "Wasserstein (log1p)"),
+    ("js_divergence_log", "Gaussian JS divergence (log1p)"),
+    ("mean_expr_rmse_log", "Mean expression RMSE (log1p)"),
+    ("gene_corr_similarity_log", "Gene-gene correlation similarity (log1p)"),
+    ("wasserstein_raw", "Wasserstein (raw)"),
+    ("js_divergence_raw", "Gaussian JS divergence (raw)"),
+    ("mean_expr_rmse_raw", "Mean expression RMSE (raw)"),
+    ("gene_corr_similarity_raw", "Gene-gene correlation similarity (raw)"),
     ("runtime", "Runtime (s)"),
 ]
 
@@ -106,6 +107,16 @@ _CELL_METRICS: List[Tuple[str, str]] = [
 def signed_log1p(x: np.ndarray) -> np.ndarray:
     """Sign-preserving log1p transform: sign(x) * log(1 + |x|)."""
     return np.sign(x) * np.log1p(np.abs(x))
+
+
+def _gene_only(adata: Any) -> Any:
+    """Drop stimulus variables (by name) so only genes are compared."""
+    keep = [not str(v).lower().startswith("stimulus") for v in adata.var_names]
+    return adata if all(keep) else adata[:, keep].copy()
+
+
+def _dense(x: Any) -> np.ndarray:
+    return (x.toarray() if hasattr(x, "toarray") else np.asarray(x)).astype(float)
 
 
 def _load_grn(path: Path) -> np.ndarray:
@@ -182,7 +193,7 @@ def plot_grn_heatmaps(run_dir: Path, output_dir: Path) -> List[Path]:
             logger.info("Method '%s': no GRN files, skipping heatmaps.", method)
             continue
 
-        for (replicate, perturbation, pt), pred_path in sorted(pred_grns.items()):
+        for (replicate, perturbation, pt), pred_path in pred_grns.items():
             true_key = (
                 (replicate, perturbation, False)
                 if (replicate, perturbation, False) in true_grns
@@ -245,7 +256,7 @@ def plot_grn_heatmaps(run_dir: Path, output_dir: Path) -> List[Path]:
 def plot_grn_pr_curves(
     run_dir: Path,
     output_dir: Path,
-    threshold: float = 0.0,
+    scope: str = "genes",
 ) -> List[Path]:
     """Precision-Recall curves for every (method, replicate) pair with a
     matching ground-truth GRN.
@@ -257,7 +268,8 @@ def plot_grn_pr_curves(
     Args:
         run_dir:   Path to ``benchmark/outputs_methods/<run_name>/``.
         output_dir: Directory for saved PNG files.
-        threshold: Binarization threshold for the true GRN.
+        scope:     Edge set ("genes" or "full"), same as the ``<scope>_edge_auprc``
+                   metric. A true edge is any non-zero entry; |pred| is the score.
 
     Returns:
         List of saved figure paths.
@@ -288,12 +300,10 @@ def plot_grn_pr_curves(
             logger.info("Method '%s': no GRN files, skipping PR curves.", method)
             continue
 
-        for (replicate, perturbation, pt), pred_path in sorted(pred_grns.items()):
-            true_key = (
-                (replicate, perturbation, False)
-                if (replicate, perturbation, False) in true_grns
-                else (replicate, None, False)
-            )
+        for (replicate, perturbation, pt), pred_path in pred_grns.items():
+            if perturbation is not None:
+                continue  # only the common network is scored (see compute_metrics)
+            true_key = (replicate, None, False)
             if true_key not in true_grns:
                 logger.warning(
                     "Method '%s', replicate %d: no matching true GRN, skipping PR curve.",
@@ -305,13 +315,8 @@ def plot_grn_pr_curves(
                 pred_matrix = _load_grn(pred_path)
                 true_matrix = _load_grn(true_grns[true_key])
 
-                # Align shapes
-                min_n = min(pred_matrix.shape[0], true_matrix.shape[0])
-                pred_matrix = pred_matrix[:min_n, :min_n]
-                true_matrix = true_matrix[:min_n, :min_n]
-
                 pr_data = compute_precision_recall_curve(
-                    pred_matrix, true_matrix, threshold=threshold
+                    pred_matrix, true_matrix, scope=scope
                 )
             except Exception as exc:
                 logger.error(
@@ -323,12 +328,9 @@ def plot_grn_pr_curves(
             method_name = _resolve_method_name(method, pt)
             auprc = pr_data["auprc"]
 
-            # Baseline = fraction of positive edges
-            n = true_matrix.shape[0]
-            off_diag = ~np.eye(n, dtype=bool)
-            n_pos = int(np.sum(np.abs(true_matrix[off_diag]) > threshold))
-            n_total = int(np.sum(off_diag))
-            baseline = n_pos / n_total if n_total > 0 else 0.0
+            # Baseline = fraction of true edges among the scored pairs
+            n_total = pr_data["n_pairs"]
+            baseline = pr_data["n_positives"] / n_total if n_total > 0 else 0.0
 
             fig, ax = plt.subplots(figsize=(7, 6))
 
@@ -455,8 +457,7 @@ def plot_cell_umaps(
             true_adata = read_adata(
                 str(true_adatas[true_key]),
                 dataset_id=(true_key[1] or "WT"),
-                resimulate_missing_ko=simulation != "false",
-                ko_gene=true_key[1] if true_key[1] else None,
+                strict=True,
             )
         except Exception as exc:
             logger.error(
@@ -472,11 +473,8 @@ def plot_cell_umaps(
                 logger.warning("All cells at timepoint 0 for key=%s; skipping.", true_key)
                 continue
 
-        true_X = np.asarray(true_adata.X).astype(float)
-
-        # Align feature dimensions for simulation mode (drop leading "time" col)
-        if simulation != "false" and true_X.shape[1] > 1:
-            true_X = true_X[:, 1:]
+        true_adata = _gene_only(true_adata)
+        true_X = _dense(true_adata.X)
 
         n_comps = min(n_pca_components, true_X.shape[1] - 1, true_X.shape[0] - 1)
         if n_comps < 2:
@@ -507,7 +505,7 @@ def plot_cell_umaps(
             logger.info("Method '%s': no adata files, skipping UMAP.", method)
             continue
 
-        for (replicate, perturbation, pt), pred_path in sorted(pred_adatas.items()):
+        for (replicate, perturbation, pt), pred_path in pred_adatas.items():
             target_dataset = perturbation or "WT"
             if filter_kos and target_dataset not in {"WT", *filter_kos}:
                 continue
@@ -527,13 +525,10 @@ def plot_cell_umaps(
             try:
                 pred_adata = read_adata(
                     str(pred_path), dataset_id=target_dataset,
-                    resimulate_missing_ko=False,
-                    ko_gene=target_dataset if target_dataset != "WT" else None,
                 )
                 true_adata = read_adata(
                     str(true_adatas[true_key]), dataset_id=target_dataset,
-                    resimulate_missing_ko=simulation != "false",
-                    ko_gene=target_dataset if target_dataset != "WT" else None,
+                    strict=True,
                 )
             except Exception as exc:
                 logger.error(
@@ -541,6 +536,12 @@ def plot_cell_umaps(
                     method_name, replicate, target_dataset, exc,
                 )
                 continue
+
+            # Predicted cells often only carry obs['time']: unify the label.
+            try:
+                pred_adata.obs["timepoint"] = cell_times(pred_adata)
+            except Exception:
+                pass
 
             # Exclude timepoint 0 cells for simulated data
             if simulation != "false":
@@ -557,17 +558,13 @@ def plot_cell_umaps(
                     )
                     continue
 
-            pred_X = np.asarray(pred_adata.X).astype(float)
-            true_X = np.asarray(true_adata.X).astype(float)
-
-            # Align feature dimensions for simulation mode
-            if simulation != "false":
-                if true_X.shape[1] == pred_X.shape[1] + 1:
-                    true_adata = true_adata[:, 1:].copy()
-                    true_X = true_X[:, 1:]
-                elif pred_X.shape[1] == true_X.shape[1] + 1:
-                    pred_adata = pred_adata[:, 1:].copy()
-                    pred_X = pred_X[:, 1:]
+            # Compare genes only, in the true gene order when names match
+            true_adata = _gene_only(true_adata)
+            pred_adata = _gene_only(pred_adata)
+            if set(true_adata.var_names) <= set(pred_adata.var_names):
+                pred_adata = pred_adata[:, list(true_adata.var_names)].copy()
+            pred_X = _dense(pred_adata.X)
+            true_X = _dense(true_adata.X)
 
             pca, reducer, true_pca, true_umap = reducer_cache[true_key]
 
@@ -696,9 +693,10 @@ def plot_gene_corr_scatters(
     For each pair of expression matrices, computes the gene‑gene correlation
     matrix, extracts the upper triangle of unique gene pairs, and plots the
     predicted gene‑pair correlations against the true ones.  The
-    correlation‑of‑correlations :math:`R` is reported in the plot title —
-    this is the same scalar returned by
-    :func:`metrics_cells.compute_gene_corr`.
+    correlation‑of‑correlations :math:`R` is reported in the plot title.
+    Unlike :func:`metrics_cells.gene_corr_similarity` (computed per test
+    timepoint on log1p data, then averaged), this plot pools all cells on the
+    raw scale, so its :math:`R` is a visual summary, not the reported metric.
 
     Args:
         run_dir: Path to ``benchmark/outputs_methods/<run_name>/``.
@@ -731,7 +729,7 @@ def plot_gene_corr_scatters(
             logger.info("Method '%s': no adata files, skipping gene-corr scatters.", method)
             continue
 
-        for (replicate, perturbation, pt), pred_path in sorted(pred_adatas.items()):
+        for (replicate, perturbation, pt), pred_path in pred_adatas.items():
             target_dataset = perturbation or "WT"
             if filter_kos and target_dataset not in {"WT", *filter_kos}:
                 continue
@@ -751,13 +749,10 @@ def plot_gene_corr_scatters(
             try:
                 pred_adata = read_adata(
                     str(pred_path), dataset_id=target_dataset,
-                    resimulate_missing_ko=False,
-                    ko_gene=target_dataset if target_dataset != "WT" else None,
                 )
                 true_adata = read_adata(
                     str(true_adatas[true_key]), dataset_id=target_dataset,
-                    resimulate_missing_ko=simulation != "false",
-                    ko_gene=target_dataset if target_dataset != "WT" else None,
+                    strict=True,
                 )
             except Exception as exc:
                 logger.error(
@@ -766,21 +761,13 @@ def plot_gene_corr_scatters(
                 )
                 continue
 
-            pred_X = np.asarray(pred_adata.X).astype(float)
-            true_X = np.asarray(true_adata.X).astype(float)
-
-            # Align genes via intersection of var_names (handle order mismatches)
+            # Genes only (stimulus dropped by name), aligned via var_names below
+            pred_adata = _gene_only(pred_adata)
+            true_adata = _gene_only(true_adata)
+            pred_X = _dense(pred_adata.X)
+            true_X = _dense(true_adata.X)
             pred_genes = list(pred_adata.var_names)
             true_genes = list(true_adata.var_names)
-
-            # Align feature dimensions for simulation mode (drop leading "time" col)
-            if simulation != "false":
-                if true_X.shape[1] == pred_X.shape[1] + 1:
-                    true_X = true_X[:, 1:]
-                    true_genes = true_genes[1:]
-                elif pred_X.shape[1] == true_X.shape[1] + 1:
-                    pred_X = pred_X[:, 1:]
-                    pred_genes = pred_genes[1:]
 
             common = sorted(set(pred_genes) & set(true_genes))
             if len(common) < 3:
@@ -822,7 +809,7 @@ def plot_gene_corr_scatters(
                 )
                 continue
 
-            # Correlation of correlations (same as compute_gene_corr)
+            # Correlation of correlations (same as metrics_cells.gene_corr_similarity)
             r_val = float(np.corrcoef(cp, ct)[0, 1]) if len(cp) >= 2 else np.nan
 
             # --- Plot ---

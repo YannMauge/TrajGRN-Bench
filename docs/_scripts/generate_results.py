@@ -23,7 +23,6 @@ import mkdocs_gen_files
 
 
 RESULTS_DATA_DIR = Path("docs/results_data")
-RESULTS_OUTPUT = Path("results_generated.md")
 
 
 def find_result_dirs(base: Path) -> List[Path]:
@@ -247,8 +246,14 @@ def main():
     result_dirs = find_result_dirs(RESULTS_DATA_DIR)
     content = generate_results_page(result_dirs)
 
-    with mkdocs_gen_files.open(RESULTS_OUTPUT, "w") as f:
-        f.write(content)
+    if not result_dirs:
+        return  # keep the static "no results yet" text of results.md
+    # Fill the AUTO-GENERATED block of results.md (the page in the nav).
+    page = (Path(__file__).resolve().parents[1] / "results.md").read_text()
+    start, end = "<!-- AUTO-GENERATED RESULTS START -->", "<!-- AUTO-GENERATED RESULTS END -->"
+    i, j = page.index(start), page.index(end)
+    with mkdocs_gen_files.open("results.md", "w") as f:
+        f.write(page[: i + len(start)] + "\n\n" + content + "\n\n" + page[j:])
 
 
 if __name__ == "__main__":

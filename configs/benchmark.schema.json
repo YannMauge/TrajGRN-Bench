@@ -13,7 +13,8 @@
       "properties": {
         "input_dir": { "type": "string" },
         "adata_dir": { "type": "string" },
-        "results_dir": { "type": "string" }
+        "results_dir": { "type": "string" },
+        "metrics_dir": { "type": "string", "description": "Metrics / rankings output root (default benchmark/outputs_metrics)" }
       },
       "additionalProperties": false
     },
@@ -26,7 +27,10 @@
         },
         "replicates_number": { "type": "integer", "minimum": 1 },
         "simulator_backend": { "type": "string", "enum": ["harissa", "boolode", "sergio", "dyngen"] },
-        "simul_ko_genes": { "type": "string" }
+        "simul_ko_genes": { "type": "string" },
+        "n_cells": { "type": "integer", "minimum": 2, "description": "Cells per dataset (all simulators)" },
+        "n_time_bins": { "type": "integer", "minimum": 2, "description": "Number of timepoints (labels 0, 100/n, ...)" },
+        "seed": { "type": "integer", "minimum": 0, "description": "Base random seed (replicate r uses seed*1000 + r)" }
       },
       "additionalProperties": false
     },
@@ -82,14 +86,20 @@
     "execution": {
       "type": "object",
       "properties": {
-        "runner_env": { "type": "string" },
-        "default_runner": { "type": "string", "enum": ["conda", "docker", "apptainer"] },
+        "runner_tool": { "type": "string", "enum": ["pixi", "conda"], "description": "Environment manager for the orchestration steps (default: pixi if installed)" },
+        "runner_env": { "type": "string", "description": "Runner environment name (default: 'runner' for pixi, 'benchmark_runner' for conda)" },
+        "gpu": { "type": "boolean", "description": "Run methods on GPU: CUDA pixi env / '-cuda' image when available, docker --gpus all / apptainer --nv" },
+        "default_runner": { "type": "string", "enum": ["pixi", "conda", "docker", "apptainer"] },
         "method_runners": {
           "type": "object",
           "additionalProperties": {
             "type": "string",
-            "enum": ["conda", "docker", "apptainer"]
+            "enum": ["pixi", "conda", "docker", "apptainer"]
           }
+        },
+        "pixi_envs": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
         },
         "conda_envs": {
           "type": "object",

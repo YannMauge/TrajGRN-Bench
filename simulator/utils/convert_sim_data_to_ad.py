@@ -13,6 +13,7 @@ def main(argv):
         sys.exit(2)
     dataset_id = "WT"
     simulation_name = "Harissa"
+    fname_deg = None
     for opt, arg in opts:
         if opt in ("-i", "--ifile"):
             fpath_panel = '{}'.format(arg)
@@ -43,10 +44,13 @@ def main(argv):
     adata.obs['time'] = time.astype(int)
     adata.obs['timepoint'] = time.astype(int)
     adata.obs['dataset_id'] = dataset_id
-    degradations = np.loadtxt(fname_deg, delimiter='\t')
-
-    adata.var['d0'] = degradations[:, 0]
-    adata.var['d1'] = degradations[:, 1]
+    # Simulator-defined mRNA / protein degradation rates (timepoint units), used
+    # as priors by CardamomOT; absent when the simulator does not define them.
+    import os
+    if fname_deg and os.path.isfile(fname_deg):
+        degradations = np.loadtxt(fname_deg, delimiter='\t')
+        adata.var['d0'] = degradations[:, 0]
+        adata.var['d1'] = degradations[:, 1]
     adata.uns['simulation'] = simulation_name
     print(adata)
     adata.write(output_path+fname_panel+'.h5ad')

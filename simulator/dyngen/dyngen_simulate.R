@@ -220,7 +220,7 @@ main <- function() {
         message(sprintf("  KO: %s",ko_gene))
         gene_idx <- match(ko_gene, result$gene_names)
         if(is.na(gene_idx)){warning(sprintf("Cannot map '%s'.",ko_gene));next}
-        ko_expr <- run_ko(model, gene_idx, params$n_genes, params$n_cells, params$n_time_bins)
+        ko_expr <- run_ko(model, gene_idx, params$n_genes, params$n_cells, params$n_time_bins, run_seed)
         if(!is.null(ko_expr)) write_outputs(ko_expr$counts, ko_expr$time, result$gene_names, params$output_folder, run_idx, ko_label=ko_gene)
       }
     }

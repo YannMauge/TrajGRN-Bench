@@ -14,7 +14,11 @@ import os
 import sys, getopt
 import torch
 import time
-sys.path.append("./methods/referencefitting/src/")
+from pathlib import Path
+_HERE = Path(__file__).resolve()
+sys.path.insert(0, str(_HERE.parents[1] / "src"))   # methods/referencefitting/src
+sys.path.insert(0, str(_HERE.parents[2]))           # methods/ (shared helpers)
+from _common import load_split, load_training_data, parse_ko_targets, read_dense, save_grn, seed_everything  # noqa: E402
 import rf
 import util
 import ot
@@ -29,11 +33,23 @@ def main(argv):
     perturbation_training = False
     ko_output_genes = "none"
 
-    def future_pred(estimator, adata, T_start, n_timepoints):
-        Xs_copy = estimator.Xs[adata].copy()[T_start]
+    def future_pred(estimator, adata, T_start, n_timepoints, ko_gene=None):
+        """Roll the fitted dynamics forward from WT cells at T_start.
+
+        Uses the matrix as trained (A_orig, with its diagonal; the saved GRN
+        is the zero-diagonal A). For a KO, the upstream mask (mask_matrix:
+        KO column zeroed) is applied to A *and* b, and the KO gene starts at
+        0, so it stays at 0 and stops regulating its targets.
+        """
+        Xs_copy = estimator.Xs[adata][T_start].clone()
+        A_fit = getattr(estimator, "A_orig", estimator.A)
+        M = estimator.Ms[adata]
+        if ko_gene is not None:
+            M = torch.tensor(estimator.mask_matrix(ko_gene)).to(A_fit.device)
+            Xs_copy[:, list(estimator.genes).index(ko_gene)] = 0
         Xs_pred = [Xs_copy]
-        A = estimator.A * estimator.Ms[adata]
-        b = estimator.b * estimator.Ms[adata][0, :]
+        A = A_fit * M
+        b = estimator.b * M[0, :]
         t = 1 /estimator.T
         P = torch.linalg.matrix_exp(t*A)
         for n in range(n_timepoints):
@@ -63,32 +79,13 @@ def main(argv):
     if not os.path.exists(outputfolder):
         os.makedirs(outputfolder)
 
-    data_path = os.path.join(inputfile)
-    if os.path.exists(data_path):
-        adata = ad.read_h5ad(data_path)
-    else:
-        raise FileNotFoundError(
-            "There is no data available. Create a subfolder 'Data' in your main folder "
-            "and put inside a count table named 'data.h5ad'."
-        )
-
-    if scipy.sparse.issparse(adata.X):
-        adata.X = adata.X.toarray()
-    
-    path_data_folder = os.path.dirname(inputfile)
-    train_tps = np.load(path_data_folder+"/train_tps.npy")
-    test_tps = np.load(path_data_folder+"/test_tps.npy")
-
-    adata_train = adata[adata.obs[t_key].isin(train_tps[:, 1]),:]
-    if perturbation_training == False and "dataset_id" in adata_train.obs:
-        if len(np.unique(adata_train.obs["dataset_id"])) > 1:
-            adata_train = adata_train[adata_train.obs["dataset_id"] == "WT"].copy()
-
-    # Apply cell subsampling if subsample_train_ids.npy is present
-    subsample_ids_path = os.path.join(path_data_folder, "subsample_train_ids.npy")
-    if os.path.exists(subsample_ids_path):
-        subsample_ids = np.load(subsample_ids_path, allow_pickle=True)
-        adata_train = adata_train[adata_train.obs_names.isin(subsample_ids)].copy()
+    if not os.path.exists(inputfile):
+        raise FileNotFoundError(f"Input file not found: {inputfile}")
+    seed_everything(0)
+    adata = read_dense(inputfile)
+    adata_train, train_tps, test_tps = load_training_data(inputfile, perturbation_training)
+    _, _, subsample_ids = load_split(inputfile)
+    is_wt = (adata.obs["dataset_id"].astype(str) == "WT").to_numpy() if "dataset_id" in adata.obs else np.ones(adata.n_obs, bool)
 
     start_runtime = time.time()
     print("Starting reference fitting model training")
@@ -138,18 +135,12 @@ def main(argv):
     #t = 1/estim_alt_wt.T
     #P = torch.linalg.matrix_exp(t*estim_alt_wt.A)
     #grn = P.cpu().numpy()
+    # A[i, j] = effect of gene i on gene j (x_next = x @ expm(tA)): regulator x target
     grn = estim_alt_wt.A.cpu().numpy()
     save_path_prefix = os.path.splitext(os.path.basename(inputfile))[0]
-    np.save(outputfolder+save_path_prefix+'_GRN', grn)
+    save_grn(outputfolder, inputfile, grn, adata_train.var_names)
 
-    ko_targets = []
-    if ko_output_genes.lower() == "all":
-        ko_targets = [gene for gene in adata_train.var_names if gene != "Stimulus"]
-    elif ko_output_genes.lower() not in ["none", ""]:
-        ko_targets = [gene.strip() for gene in ko_output_genes.split(",") if gene.strip()]
-    invalid_kos = [gene for gene in ko_targets if gene not in adata_train.var_names]
-    if invalid_kos:
-        raise ValueError(f"Unknown KO gene(s): {invalid_kos}")
+    ko_targets = parse_ko_targets(ko_output_genes, adata_train.var_names)
 
     if output_mode != 'no_traj':
         # ref_fit uses squeezed time indices (0-based, 1 unit between samples)
@@ -171,21 +162,19 @@ def main(argv):
 
         # When subsampling is active, replace the estimator's internal data
         # with cells that are not in subsample_ids for all timepoints
-        is_subsampling = os.path.exists(subsample_ids_path)
-        if is_subsampling:
-            subsample_ids = np.load(subsample_ids_path, allow_pickle=True)
-            # Replace Xs with cells not in subsample_ids for all timepoints
+        if subsample_ids is not None:
+            # Replace Xs with WT cells not in subsample_ids for all timepoints
             for tp_idx, tp_val in enumerate(train_tps[:, 1]):
-                tp_cells = adata[adata.obs[t_key] == tp_val]
-                not_in_subsample_mask = ~tp_cells.obs_names.isin(subsample_ids)
+                tp_cells = adata[(adata.obs[t_key] == tp_val).to_numpy() & is_wt]
+                not_in_subsample_mask = ~tp_cells.obs_names.isin(np.asarray(subsample_ids).astype(str))
                 X_not_subsampled = tp_cells[not_in_subsample_mask].X
                 if scipy.sparse.issparse(X_not_subsampled):
                     X_not_subsampled = X_not_subsampled.toarray()
                 estim_alt_wt.Xs[0][tp_idx] = torch.tensor(X_not_subsampled, dtype=torch.float64)
 
-        def simulate_and_save(estimator, output_suffix, dataset_id):
+        def simulate_and_save(estimator, output_suffix, dataset_id, ko_gene=None):
             n_cells_at_T_start = int(estimator.Xs[0][T_start_idx].shape[0])
-            pred_data = future_pred(estimator, 0, T_start_idx, n_steps)
+            pred_data = future_pred(estimator, 0, T_start_idx, n_steps, ko_gene=ko_gene)
             pred_array = np.array([pred_data[i].cpu().numpy() for i in range(len(pred_data))])
             pred_array = np.reshape(pred_array, newshape=(len(pred_data) * n_cells_at_T_start, adata_train.shape[1]))
             list_times_pred = []
@@ -204,23 +193,18 @@ def main(argv):
                 pred_train_data = pred_adata
 
             pred_train_data.uns['runtime'] = time.time() - start_runtime
-            if adata.uns['simulation'] != None:
+            if adata.uns.get('simulation') is not None:
                 pred_train_data = pred_train_data[:, 1:].copy()
             pred_train_data.write_h5ad(outputfolder+save_path_prefix+output_suffix+'_adata.h5ad')
 
         simulate_and_save(estim_alt_wt, '', 'WT')
 
-    if ko_targets:
-        base_A = estim_alt_wt.A.clone()
-        for ko_gene in ko_targets:
-            ko_idx = list(adata_train.var_names).index(ko_gene)
-            estim_alt_wt.A = base_A.clone()
-            # KO simulation: zero all incoming edges toward ko_gene.
-            estim_alt_wt.A[:, ko_idx] = 0
-            np.save(outputfolder+save_path_prefix+f'_ko_{ko_gene}_GRN', estim_alt_wt.A.cpu().numpy())
-            if output_mode != 'no_traj':
-                simulate_and_save(estim_alt_wt, f'_ko_{ko_gene}', ko_gene)
-        estim_alt_wt.A = base_A
+    for ko_gene in ko_targets:
+        # KO network (not scored): upstream mask, KO gene's column zeroed
+        M_ko = estim_alt_wt.mask_matrix(ko_gene)
+        save_grn(outputfolder, inputfile, grn * M_ko, adata_train.var_names, suffix=f'_ko_{ko_gene}')
+        if output_mode != 'no_traj':
+            simulate_and_save(estim_alt_wt, f'_ko_{ko_gene}', ko_gene, ko_gene=ko_gene)
     
 
 if __name__ == "__main__":

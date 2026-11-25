@@ -1,82 +1,94 @@
 # Method Input/Output Specification
 
-This page documents the standardized input/output formats for all methods in
-TrajGRN-Bench. Every method must follow these conventions.
+This page documents the input/output contract every method entrypoint follows.
+`methods/_common.py` implements it (loading, filtering, GRN saving); see
+[Adding a Method](development_add_method.md) for a template.
 
 ## CLI Convention
 
-All method entrypoints must accept these arguments:
+`single_run.sh` calls Python entrypoints as:
 
 ```
-python <script> \
-    --adata <path>          # Input AnnData (.h5ad)
-    --output_dir <path>      # Where to write results
-    --train_tps <path>       # Training timepoints (.npy)
-    --test_tps <path>        # Test timepoints (.npy)
-    --output_mode <mode>     # full_full | full_train | full_test | no_traj
-    [--ko_genes <genes>]     # Optional: comma-separated KO target genes
+python <script> -i <inputs>/data_<i>.h5ad -o <results>/<Method>/ \
+    [-u <output_mode>]            # full_full | full_train | full_test | no_traj
+    [-k <ko_genes>]               # none | all | Gene1,Gene2 (KOs to predict)
+    [-p <true|false>]             # perturbation training
+    [extra_args ...]              # from the registry
 ```
 
-## Input: AnnData
+Flags `-u`, `-k`, `-p` are passed when the registry entry declares
+`pass_output_mode`, `pass_ko_genes`, `supports_perturbation_training`. Bash
+entrypoints receive positional arguments:
+`<input> <output_dir> [output_mode] [perturbation_training] [ko_genes]`.
+The script must exit with a non-zero code on failure.
+
+## Inputs (the run's `inputs/` folder)
+
+```
+inputs/
+├── data_<i>.h5ad              # WT cells + training perturbations only
+├── train_tps.npy              # [[index, timepoint_value], ...]
+├── test_tps.npy
+├── subsample_train_ids.npy    # subsample_full only: obs_names of training cells
+└── halflife/                  # half-life table (CardamomOT priors for real genes)
+```
 
 ```
 adata
-├── .X          # Gene expression [n_cells × n_genes] — dense or sparse
-├── .obs        # Cell metadata — must have 'timepoint' or 'time'
-├── .var        # Gene metadata — index = gene names
-└── .uns        # Optional unstructured metadata
+├── .X          # counts [n_cells × n_vars]; var 0 is "Stimulus" for simulated data
+├── .obs        # 'timepoint' / 'time' (timepoint value), 'dataset_id' ('WT' or KO gene)
+├── .var        # index = variable names; 'd0' / 'd1' = mRNA / protein degradation rates in
+│               #   timepoint units, only when the simulator defines them (Harissa, BoolODE)
+└── .uns        # 'simulation' (simulator name), …
 ```
 
-## Input: Timepoints
+Training cells: `obs['timepoint']` in `train_tps[:, 1]`, `dataset_id == "WT"`
+unless perturbation training, and `obs_names` in `subsample_train_ids` when
+present (`_common.load_training_data`).
 
-NumPy array, shape `(n_timepoints, 2)`:
+## Outputs (in `-o`)
 
-```python
-# [[timepoint_id, timepoint_value], ...]
-[[0, 0.0], [1, 1.0], [2, 2.0]]
-```
+### `data_<i>_GRN.npy` (GRN-capable methods)
 
-Filter training data: `adata[adata.obs['timepoint'].isin(train_tps[:, 1])]`
+- 2-D array, shape `(n_vars, n_vars)` — with simulated data
+  `(n_genes + 1, n_genes + 1)`, index 0 = Stimulus, then genes in
+  `adata.var_names` order (an `n_genes × n_genes` matrix is accepted and scored
+  on gene→gene edges only).
+- **`grn[regulator, target]`**; positive = activation, negative = inhibition
+  (unsigned scores are fine but cannot score on the sign-aware metrics).
+- Any scale: metrics are threshold-free (rankings of the weights).
+- `_common.save_grn` checks shape/stimulus and pads a gene-only matrix.
 
-## Required Outputs
+### `data_<i>_adata.h5ad` (trajectory-capable methods)
 
-### `data_x_GRN.npy` (if GRN-capable)
+Predicted cells with `obs['time']` = timepoint value, genes as in the input
+(stimulus optional, matched by name), on the count scale. Timepoints by
+`output_mode`:
 
-$N \times N$ adjacency matrix with gene names as both row and column labels:
+| `output_mode` | Predicted timepoints | Also contains |
+|---------------|----------------------|---------------|
+| `full_test` | test timepoints, from the last training timepoint | the real training cells |
+| `full_train` | training timepoints, from the first one | — |
+| `full_full` | all timepoints, from the first one | — |
+| `no_traj` | none | — |
 
-```csv
-, GeneA, GeneB, GeneC
-GeneA, 0.0, 0.8, -0.3
-GeneB, 0.1, 0.0, 0.5
-GeneC, 0.0, 0.2, 0.0
-```
+### `data_<i>_ko_<gene>_adata.h5ad` (KO predictions, with `-k`)
 
-- Values represent edge weights (positive = activation, negative = inhibition)
+Same format, cells predicted under the knockout of `<gene>`. Scored only if
+that knockout was simulated (held-out KOs are never in the inputs).
 
-### `data_x_adata.h5ad` (if trajectory-capable)
+KO-specific networks (`data_<i>_ko_<gene>_GRN.npy`) may be written but are not
+scored: only the common network is evaluated.
 
-AnnData object with simulated expression in `.X`:
+### Completion marker
 
-```python
-import scanpy as sc
-adata_sim = sc.read_h5ad("data_x_adata.h5ad")
-# adata_sim.X shape: [n_simulated_cells × n_genes]
-# adata_sim.obs should contain 'timepoint'
-```
-
-### `.done` marker (always required)
-
-An empty file signaling successful completion:
-
-```bash
-touch <output_dir>/.done
-```
+Written by `single_run.sh` (`data_<i>.done`, containing a fingerprint of the
+inputs and settings) when the script exits with code 0 — methods do not write
+it.
 
 ## Examples
 
-See working implementations in:
-
-- `methods/CardamomOT/infer_test.py` — Python entrypoint
-- `methods/flecs/flecs_train.py` — Python entrypoint with extra args
-- `methods/scnode/scnode.py` — Python entrypoint
-- `methods/pearson/inference_pearson.py` — Simple baseline example
+- `methods/pearson/inference_pearson.py` — minimal baseline on `_common`
+- `methods/dynGENIE3/dynGENIE3_ontrain.py` — GRN method on `_common`
+- `methods/referencefitting/notebooks/ref_fit.py` — GRN + trajectories + KO predictions
+- `methods/CardamomOT/run_carda_benchmark.sh` — bash entrypoint

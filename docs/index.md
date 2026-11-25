@@ -47,11 +47,12 @@ GRN and trajectory methods on simulated datasets.
 ## Quick Start
 
 ```bash
-# 1. Install the runner environment
-conda env create -f environments/benchmark_runner.yml
+# 1. Install pixi (https://pixi.sh) and the runner environment
+pixi install -e runner
+pixi run -e runner install-dyngen   # only for the dyngen simulator
 
-# 2. Build method containers
-make -f containers/Makefile -j4 all
+# 2. Build method Docker images (from pixi.toml / pixi.lock)
+make -f containers/Makefile all
 
 # 3. Run the benchmark
 bash benchmark_run.sh --config configs/benchmark.example.yaml

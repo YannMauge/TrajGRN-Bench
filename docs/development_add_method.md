@@ -1,99 +1,120 @@
 # Adding a New Method
 
-This guide walks you through integrating a new inference method into
-TrajGRN-Bench. In most cases, you only need to touch **two files**: the method
-entrypoint script and `methods_registry.yaml`.
+Integrating a method touches four places: the **entrypoint script**, a **pixi
+environment** (`pixi.toml`), an entry in **`methods_registry.yaml`**, and its
+**Docker image** (built automatically from the pixi environment).
 
-## Step-by-Step
+## 1. Write the Method Entrypoint Script
 
-### 1. Write the Method Entrypoint Script
-
-Create a Python (or bash) script in `methods/<your_method>/` that follows the
-standard CLI convention:
+Create `methods/<your_method>/infer.py` (or a bash script). `single_run.sh`
+calls it as:
 
 ```bash
-python methods/<your_method>/infer.py \
-    --adata <input.h5ad> \
-    --output_dir <output_dir> \
-    --train_tps <train_tps.npy> \
-    --test_tps <test_tps.npy> \
-    --output_mode full_test \
-    [--ko_genes GENE1,GENE2]
+python methods/<your_method>/infer.py -i <inputs>/data_1.h5ad -o <results>/<Method>/ \
+    [-u <output_mode>] [-k <ko_genes>] [-p <perturbation_training>] [extra_args...]
 ```
 
-Your script must produce:
+| Flag | Passed when (registry) | Meaning |
+|------|------------------------|---------|
+| `-i` | always | input AnnData in the run's `inputs/` folder |
+| `-o` | always | output folder (ends with `/`) |
+| `-u` | `pass_output_mode: true` | `full_full`, `full_train`, `full_test` or `no_traj` |
+| `-k` | `pass_ko_genes: true` | KO genes to predict: `none`, `all` or `Gene1,Gene2` |
+| `-p` | `supports_perturbation_training: true` | `true` / `false` |
+
+Bash entrypoints get positional arguments instead:
+`<input> <output_dir> [output_mode] [perturbation_training] [ko_genes]`.
+
+Next to the input file are `train_tps.npy` / `test_tps.npy` (rows
+`[index, timepoint_value]`) and, for `subsample_full`,
+`subsample_train_ids.npy`. The input contains WT cells plus the *training*
+perturbations only (`obs['dataset_id']`); held-out knockouts are never visible
+to methods.
+
+### Outputs
 
 | File | Required | Description |
 |------|:--------:|-------------|
-| `<data_id>_GRN.npy` | If GRN-capable | $N \times N$ adjacency matrix, NumPy binary, genes as row/col names |
-| `simulated_adata.h5ad` | If trajectory-capable | AnnData with `.X` containing simulated expression |
-| `.done` | Always | Empty marker file indicating successful completion |
+| `data_<i>_GRN.npy` | if GRN-capable | 2-D, shape (n_genes+1, n_genes+1), row/col 0 = Stimulus, `grn[regulator, target]`, signed if the method infers signs |
+| `data_<i>_adata.h5ad` | if trajectory-capable | predicted cells with `obs['time']` (timepoint values); for `full_test` also the training cells |
+| `data_<i>_ko_<gene>_adata.h5ad` | if `-k` and KO-capable | predicted cells under the knockout |
 
-See the full [Method I/O Specification](methods_io.md) for details.
+The `.done` marker is written by `single_run.sh` (with an input fingerprint);
+the script only has to exit with a non-zero code on failure.
 
-??? example "Minimal Python entrypoint template"
-    ```python
-    #!/usr/bin/env python3
-    """Minimal method entrypoint for TrajGRN-Bench."""
-    import argparse, os, numpy as np, pandas as pd, scanpy as sc
+### Use the shared helpers
 
-    def main():
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--adata", required=True)
-        parser.add_argument("--output_dir", required=True)
-        parser.add_argument("--train_tps", required=True)
-        parser.add_argument("--test_tps", required=True)
-        parser.add_argument("--output_mode", default="full_test")
-        parser.add_argument("--ko_genes", default=None)
-        args = parser.parse_args()
+`methods/_common.py` implements the contract; using it avoids the classic bugs
+(wrong orientation, KO cells in the training set, subsampling after
+re-indexing, stimulus counted in library sizes):
 
-        os.makedirs(args.output_dir, exist_ok=True)
+```python
+#!/usr/bin/env python3
+"""Minimal method entrypoint for TrajGRN-Bench."""
+import getopt, sys
+from pathlib import Path
 
-        # Load data
-        adata = sc.read_h5ad(args.adata)
-        train_tps = np.load(args.train_tps)
+import numpy as np
 
-        # --- Your method logic here ---
-        grn_matrix = np.random.randn(adata.n_vars, adata.n_vars)
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # methods/
+from _common import load_training_data, log_normalize_genes, save_grn, seed_everything
 
-        # Save GRN
-        data_id = os.path.splitext(os.path.basename(args.adata))[0]
-        np.save(os.path.join(args.output_dir, f"{data_id}_GRN"), grn_matrix)
 
-        # Mark completion
-        open(os.path.join(args.output_dir, ".done"), "w").close()
+def main(argv):
+    opts, _ = getopt.getopt(argv, "i:o:u:k:p:")
+    args = dict(opts)
+    inputfile, outdir = args["-i"], args["-o"]
+    perturbation_training = args.get("-p", "false").lower() == "true"
 
-    if __name__ == "__main__":
-        main()
-    ```
+    seed_everything(0)
+    # WT (+ training KOs if perturbation_training) cells at training timepoints
+    adata, train_tps, test_tps = load_training_data(inputfile, perturbation_training)
+    x = log_normalize_genes(adata.X, adata.var_names)
 
-### 2. Create a Conda Environment File
+    grn = np.corrcoef(x, rowvar=False)            # your inference here: regulator x target
+    save_grn(outdir, inputfile, grn, adata.var_names)
 
-Create `environments/<your_method>.yml` with all dependencies:
 
-```yaml
-name: your_method
-channels:
-  - conda-forge
-  - defaults
-dependencies:
-  - python=3.10
-  - numpy
-  - pandas
-  - scanpy
-  - pip
-  - pip:
-      - your-method-package
+if __name__ == "__main__":
+    main(sys.argv[1:])
 ```
 
-### 3. Register in `methods_registry.yaml`
+See [Method I/O Specification](methods_io.md) for the full contract.
 
-Add your method under the `methods:` key:
+## 2. Add a pixi Environment
+
+In `pixi.toml`, add a feature and an environment (conda-forge first; PyPI only
+for packages missing there):
+
+```toml
+[feature.yourmethod.dependencies]
+python = "3.12.*"
+pytorch = "*"
+
+[feature.yourmethod.pypi-dependencies]
+your-method-package = "==1.2.3"
+
+[environments]
+yourmethod = { features = ["sci", "yourmethod"], no-default-feature = true }
+# optional GPU variant (linux-64): PyTorch with CUDA 12
+yourmethod-cuda = { features = ["sci", "yourmethod", "cuda"], no-default-feature = true }
+```
+
+Then lock and test locally:
+
+```bash
+pixi lock
+pixi install -e yourmethod
+pixi run -e yourmethod python methods/your_method/infer.py -i ... -o /tmp/out/
+```
+
+The lock must cover linux-64, linux-aarch64 and osx-arm64. Pin exact versions
+when the method's publication does.
+
+## 3. Register in `methods_registry.yaml`
 
 ```yaml
 methods:
-  # ... existing methods ...
-
   YourMethod:
     display_name: Your Method
     description: >
@@ -106,67 +127,51 @@ methods:
       pass_output_mode: true
       pass_ko_genes: false
       supports_perturbation_training: false
+      extra_args: []
     execution:
       default_runner: docker
-      conda_env: your_method
+      pixi_env: yourmethod
       container:
         image: benchmark/yourmethod:latest
-        env_file: environments/your_method.yml
-        env_name: your_method
     capabilities:
       grn_inference: true
       trajectory_reconstruction: true
       perturbation_training: false
 ```
 
-Then add `YourMethod` to the `iteration_order` list at the bottom of the file.
+Add `YourMethod` to `iteration_order` at the bottom of the file and to
+`benchmark.run_methods` in your config.
 
-### 4. Build the Docker Image
-
-```bash
-docker build -f containers/docker/Dockerfile \
-  --build-arg ENV_FILE=environments/your_method.yml \
-  --build-arg ENV_NAME=your_method \
-  -t benchmark/yourmethod:latest .
-```
-
-### 5. Test Locally
+## 4. Build the Docker Image
 
 ```bash
-# Test your entrypoint directly
-python methods/your_method/infer.py \
-  --adata benchmark/data/data_1.h5ad \
-  --output_dir /tmp/test_output \
-  --train_tps benchmark/data/train_tps.npy \
-  --test_tps benchmark/data/test_tps.npy \
-  --output_mode full_test
-
-# Test via the benchmark runner (single method)
-python benchmark_run_config.py --config configs/benchmark.example.yaml
+make -f containers/Makefile yourmethod          # benchmark/yourmethod:latest
+make -f containers/Makefile yourmethod-cuda     # GPU variant (linux/amd64)
 ```
 
-### 6. Verify Metrics
+## 5. Run and Check the Metrics
+
+```yaml
+benchmark:
+  run_methods:
+    YourMethod: true
+```
 
 ```bash
-python post_analysis/compute_metrics.py \
-  --methods-dir benchmark/outputs_methods/<run_name>/YourMethod \
-  --output-dir /tmp/test_metrics
+bash benchmark_run.sh --config configs/your_config.yaml
 ```
+
+Results: `benchmark/outputs_metrics/<run>/grn_metrics.csv`,
+`cell_metrics.csv` and the ranking tables. A failing method is listed in
+`failed_methods.tsv` and the run continues with the other methods.
 
 ## Checklist
 
-- [ ] Entrypoint script follows CLI convention
-- [ ] Produces `<data_id>_GRN.npy` (if GRN-capable)
-- [ ] Produces `simulated_adata.h5ad` (if trajectory-capable)
-- [ ] Creates `.done` marker on completion
-- [ ] Conda environment file in `environments/`
-- [ ] Entry added to `methods_registry.yaml`
-- [ ] Entry added to `iteration_order` in registry
-- [ ] Docker image builds successfully
-- [ ] Metrics compute correctly
-
-## Need Help?
-
-- Check the [Method I/O Specification](methods_io.md)
-- See examples in `methods/CardamomOT/`, `methods/flecs/`, etc.
-- Open an issue on GitHub
+- [ ] Entrypoint parses `-i -o` (+ `-u -k -p` as declared) and exits non-zero on failure
+- [ ] Trains on WT cells (or WT + training perturbations) at training timepoints only
+- [ ] `data_<i>_GRN.npy`: 2-D, stimulus at index 0, `grn[regulator, target]`
+- [ ] `data_<i>_adata.h5ad` with `obs['time']` for the requested `output_mode`
+- [ ] Random seeds fixed
+- [ ] pixi environment added and `pixi.lock` updated
+- [ ] Registry entry (+ `iteration_order`) with `pixi_env` and image
+- [ ] Docker image builds and the method runs in `benchmark_run.sh`

@@ -23,7 +23,7 @@ run_python() {
 if [ ! -d "$file/project_$(basename "${source_adata%.h5ad}")" ]; then
   mkdir -p "$file/project_$(basename "${source_adata%.h5ad}")"
   mkdir -p "$file/project_$(basename "${source_adata%.h5ad}")/Data"
-  mkdir -p "$file/project_$(basename "${source_adata%.h5ad}")/CardamomOT"
+  mkdir -p "$file/project_$(basename "${source_adata%.h5ad}")/cardamomOT"
   mkdir -p "$file/project_$(basename "${source_adata%.h5ad}")/Check"
   cp "$source_adata" "$file/project_$(basename "${source_adata%.h5ad}")/Data"
   mv "$file/project_$(basename "${source_adata%.h5ad}")/Data/$(basename "${source_adata%.h5ad}").h5ad" "$file/project_$(basename "${source_adata%.h5ad}")/Data/data_orig.h5ad"
@@ -60,12 +60,13 @@ if [ "$output_mode" != "no_traj" ]; then
     echo "Check simulation"
     run_python methods/CardamomOT/check_sim_to_data.py -i "${folder}" -s "${split}"
 
-    run_python methods/CardamomOT/concat_pred_train.py -i "${folder}" -a "$1" -k "$ko_output_genes" -p "$perturbation_training"
+    run_python methods/CardamomOT/concat_pred_train.py -i "${folder}" -a "$1" -k "$ko_output_genes" -p "$perturbation_training" -u "$output_mode"
     
     echo "Saving adata_sim_final"
-    cp "${folder}/CardamomOT/adata_sim_final.h5ad" "${file}/$(basename "${source_adata%.h5ad}")_adata.h5ad"
+    cp "${folder}/cardamomOT/adata_sim_final.h5ad" "${file}/$(basename "${source_adata%.h5ad}")_adata.h5ad"
 
-    if [[ "${ko_output_genes,,}" != "none" && -f "${folder}/Data/KO_OV_list.txt" ]]; then
+    ko_output_genes_lc="$(printf '%s' "$ko_output_genes" | tr '[:upper:]' '[:lower:]')"
+    if [[ "$ko_output_genes_lc" != "none" && -f "${folder}/Data/KO_OV_list.txt" ]]; then
         echo "Simulate KO/OV perturbations from Data/KO_OV_list.txt"
         run_python methods/CardamomOT/simulate_network_KOV.py -i "${folder}" -s "${split}"
         run_python methods/CardamomOT/check_KOV_to_sim.py -i "${folder}" -s "${split}"
@@ -81,7 +82,7 @@ if [ "$output_mode" != "no_traj" ]; then
             fi
 
             shopt -s nullglob
-            ko_adata_matches=("${folder}/CardamomOT/adata_sim_KO_${ko_gene}_OV_none_stim"*"_prior"*.h5ad)
+            ko_adata_matches=("${folder}/cardamomOT/adata_sim_KO_${ko_gene}_OV_none_stim"*"_prior"*.h5ad)
             shopt -u nullglob
             if [ ${#ko_adata_matches[@]} -gt 0 ]; then
                 cp "${ko_adata_matches[0]}" "${file}/$(basename "${source_adata%.h5ad}")_ko_${ko_gene}_adata.h5ad"
@@ -93,12 +94,13 @@ else
 fi
 
 echo "Saving inter_benchmark.npy as GRN"
-if [ -f "${folder}/CardamomOT/inter_benchmark.npy" ]; then
-    cp "${folder}/CardamomOT/inter_benchmark.npy" "${file}/$(basename "${source_adata%.h5ad}")_GRN.npy"
-elif [ -f "${folder}/CardamomOT/inter.npy" ]; then
-    cp "${folder}/CardamomOT/inter.npy" "${file}/$(basename "${source_adata%.h5ad}")_GRN.npy"
+if [ -f "${folder}/cardamomOT/inter_benchmark.npy" ]; then
+    cp "${folder}/cardamomOT/inter_benchmark.npy" "${file}/$(basename "${source_adata%.h5ad}")_GRN.npy"
+elif [ -f "${folder}/cardamomOT/inter.npy" ]; then
+    cp "${folder}/cardamomOT/inter.npy" "${file}/$(basename "${source_adata%.h5ad}")_GRN.npy"
 else
-    echo "Warning: no GRN file found in ${folder}/CardamomOT (expected inter_benchmark.npy or inter.npy)"
+    echo "ERROR: no GRN file found in ${folder}/cardamomOT (expected inter_benchmark.npy or inter.npy)" >&2
+    exit 1
 fi
 
 echo "All scripts executed !"

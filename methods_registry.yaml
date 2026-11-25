@@ -7,12 +7,11 @@
 #
 # Consumers:
 #   utils/methods_registry.py   → Python importable API
-#   single_run.sh               → BENCHMARK_METHODS_REGISTRY env var (JSON)
+#   single_run.sh               → registry CLI + BENCHMARK_EXECUTION_JSON
 #   benchmark_run.sh            → default enabled-methods list
 #   ranking_table.py            → capabilities table
-#   configs/benchmark.example.yaml / schema → auto-populated
-#   containers/Makefile         → image build targets
-#   containers/build_all.sh     → image build targets
+#   benchmark_run_config.py     → execution JSON (registry + config overrides)
+#   containers/build_all.sh     → one image per execution.pixi_env (+ -cuda)
 #   METHODS.md                  → (optional) auto-generated docs
 # =============================================================================
 
@@ -45,10 +44,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: flecs
+      pixi_env: flecs                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/flecs:latest
-        env_file: environments/flecs_cpu.yml
-        env_name: flecs
+        image: benchmark/flecs:latest     # built from pixi env 'flecs' (containers/docker/Dockerfile)
     # ── Capabilities ────────────────────────────────────────────────────
     capabilities:
       grn_inference: true
@@ -73,10 +71,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: flecs
+      pixi_env: flecs                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/flecs:latest
-        env_file: environments/flecs_cpu.yml
-        env_name: flecs
+        image: benchmark/flecs:latest     # built from pixi env 'flecs' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: true
       trajectory_reconstruction: true
@@ -100,10 +97,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: sc_dynamic
+      pixi_env: scnode                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/scnode:latest
-        env_file: environments/sc_dynamic.yml
-        env_name: sc_dynamic
+        image: benchmark/scnode:latest     # built from pixi env 'scnode' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: false
       trajectory_reconstruction: true
@@ -128,10 +124,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: reference_fitting
+      pixi_env: reference-fitting                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/referencefitting:latest
-        env_file: environments/reference_fitting.yml
-        env_name: reference_fitting
+        image: benchmark/reference-fitting:latest     # built from pixi env 'reference-fitting' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: true
       trajectory_reconstruction: true
@@ -156,10 +151,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: cardamom_env
+      pixi_env: cardamom                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/cardamomot:latest
-        env_file: environments/cardamom_ot.yml
-        env_name: cardamom_env
+        image: benchmark/cardamom:latest     # built from pixi env 'cardamom' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: true
       trajectory_reconstruction: true
@@ -183,10 +177,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: cardamom_env
+      pixi_env: baselines                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/cardamomot:latest
-        env_file: environments/cardamom_ot.yml
-        env_name: cardamom_env
+        image: benchmark/baselines:latest     # built from pixi env 'baselines' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: true
       trajectory_reconstruction: false
@@ -211,10 +204,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: cardamom_env
+      pixi_env: baselines                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/cardamomot:latest
-        env_file: environments/cardamom_ot.yml
-        env_name: cardamom_env
+        image: benchmark/baselines:latest     # built from pixi env 'baselines' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: true
       trajectory_reconstruction: false
@@ -236,10 +228,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: cardamom_env
+      pixi_env: baselines                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/cardamomot:latest
-        env_file: environments/cardamom_ot.yml
-        env_name: cardamom_env
+        image: benchmark/baselines:latest     # built from pixi env 'baselines' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: true
       trajectory_reconstruction: false
@@ -264,10 +255,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: renge
+      pixi_env: renge                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/renge:latest
-        env_file: environments/renge.yml
-        env_name: renge
+        image: benchmark/renge:latest     # built from pixi env 'renge' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: true
       trajectory_reconstruction: true
@@ -291,10 +281,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: trajectorynet
+      pixi_env: trajectorynet                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/trajectorynet:latest
-        env_file: environments/trajectorynet.yml
-        env_name: trajectorynet
+        image: benchmark/trajectorynet:latest     # built from pixi env 'trajectorynet' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: false
       trajectory_reconstruction: true
@@ -318,10 +307,9 @@ methods:
     execution:
       default_runner: docker
       conda_env: trajectorynet
+      pixi_env: trajectorynet                      # pixi.toml environment (local runs and image)
       container:
-        image: benchmark/trajectorynet:latest
-        env_file: environments/trajectorynet.yml
-        env_name: trajectorynet
+        image: benchmark/trajectorynet:latest     # built from pixi env 'trajectorynet' (containers/docker/Dockerfile)
     capabilities:
       grn_inference: false
       trajectory_reconstruction: true
@@ -330,10 +318,11 @@ methods:
 # ── Default execution settings ───────────────────────────────────────────────
 defaults:
   execution:
-    runner: conda                              # conda | docker | apptainer
-    conda_env: cardamom_env
+    runner: pixi                               # pixi | docker | apptainer | conda (legacy)
+    pixi_env: baselines
+    conda_env: cardamom_env                    # legacy conda runner only
     container_engine: docker
-    container_image: benchmark/cardamom:latest
+    container_image: benchmark/baselines:latest
 
 # ── Iteration order (used by single_run.sh and benchmark_run.sh) ──────────────
 iteration_order:

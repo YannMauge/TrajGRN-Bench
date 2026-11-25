@@ -119,6 +119,28 @@ def get_execution(key: str) -> Dict[str, Any]:
     return get_method(key).get("execution", {})
 
 
+def pixi_environments(pixi_toml: Optional[Path] = None) -> List[str]:
+    """Environment names declared in pixi.toml ([environments] section).
+
+    Parsed with a regex (no TOML dependency: the runner may be Python 3.10).
+    """
+    path = pixi_toml or (_repo_root() / "pixi.toml")
+    if not path.is_file():
+        return []
+    import re
+    text = path.read_text()
+    m = re.search(r"^\[environments\]\s*$(.*?)(?=^\[|\Z)", text, re.M | re.S)
+    if not m:
+        return []
+    return re.findall(r"^([A-Za-z0-9_-]+)\s*=", m.group(1), re.M)
+
+
+def cuda_pixi_envs() -> List[str]:
+    """Base pixi environments that have a ``<env>-cuda`` variant."""
+    envs = set(pixi_environments())
+    return sorted(e[: -len("-cuda")] for e in envs if e.endswith("-cuda") and e[: -len("-cuda")] in envs)
+
+
 def export_execution_json() -> str:
     """
     Export execution config as a JSON string suitable for
@@ -128,20 +150,24 @@ def export_execution_json() -> str:
     methods = _methods_section()
 
     result: Dict[str, Any] = {
-        "default_runner": defaults.get("runner", "conda"),
+        "default_runner": defaults.get("runner", "pixi"),
         "container_engine": defaults.get("container_engine", "docker"),
+        "gpu": False,
+        "cuda_envs": cuda_pixi_envs(),
+        "pixi_envs": {"default": defaults.get("pixi_env", "baselines")},
         "conda_envs": {"default": defaults.get("conda_env", "cardamom_env")},
-        "container_images": {"default": defaults.get("container_image", "benchmark/cardamom:latest")},
+        "container_images": {"default": defaults.get("container_image", "benchmark/baselines:latest")},
         "method_runners": {},
     }
 
     for key, m in methods.items():
         ex = m.get("execution", {})
+        result["pixi_envs"][key] = ex.get("pixi_env", defaults.get("pixi_env", "baselines"))
         result["conda_envs"][key] = ex.get("conda_env", defaults.get("conda_env", "cardamom_env"))
         container = ex.get("container", {})
         result["container_images"][key] = container.get("image", defaults.get("container_image", ""))
         runner = ex.get("default_runner")
-        if runner and runner != defaults.get("runner", "conda"):
+        if runner and runner != defaults.get("runner", "pixi"):
             result["method_runners"][key] = runner
 
     return json.dumps(result, separators=(",", ":"))
@@ -186,28 +212,28 @@ def export_registry_json() -> str:
 
 # ── Container image list (for build systems) ─────────────────────────────────
 
-def list_container_images() -> List[Dict[str, str]]:
+def list_container_images() -> List[Dict[str, Any]]:
     """
-    Return [{target, env_file, env_name, image}, ...] for every method
-    that has a distinct container image, deduplicated by image tag.
+    Return one entry per pixi environment used by a method:
+    ``{target, pixi_env, image, platforms}`` plus, when pixi.toml defines
+    ``<env>-cuda``, a GPU entry ``{target: <env>-cuda, ..., platforms:
+    ["linux/amd64"]}``. Images are tagged ``benchmark/<pixi_env>``.
     """
-    seen: set = set()
-    images: List[Dict[str, str]] = []
+    envs: List[str] = []
     for key in get_iteration_order():
         if not has_method(key):
             continue
-        ex = get_execution(key)
-        container = ex.get("container", {})
-        image = container.get("image", "")
-        if not image or image in seen:
-            continue
-        seen.add(image)
-        images.append({
-            "target": key.lower().replace("-", "").replace("_", ""),
-            "env_file": container.get("env_file", ""),
-            "env_name": container.get("env_name", ""),
-            "image": image.rstrip(":latest"),
-        })
+        env = get_execution(key).get("pixi_env")
+        if env and env not in envs:
+            envs.append(env)
+    cuda = set(cuda_pixi_envs())
+    images: List[Dict[str, Any]] = []
+    for env in envs:
+        images.append({"target": env, "pixi_env": env, "image": f"benchmark/{env}",
+                       "platforms": ["linux/amd64", "linux/arm64"]})
+        if env in cuda:
+            images.append({"target": f"{env}-cuda", "pixi_env": f"{env}-cuda",
+                           "image": f"benchmark/{env}-cuda", "platforms": ["linux/amd64"]})
     return images
 
 
@@ -259,6 +285,13 @@ if __name__ == "__main__":
         key = sys.argv[2]
         ep = get_entrypoint(key)
         print("1" if ep.get("supports_perturbation_training", False) else "0")
+    elif cmd == "pixi-env":
+        if len(sys.argv) < 3:
+            sys.exit(1)
+        defaults = _defaults_section().get("execution", {})
+        print(get_execution(sys.argv[2]).get("pixi_env", defaults.get("pixi_env", "baselines")))
+    elif cmd == "pixi-envs":
+        print("\n".join(pixi_environments()))
     elif cmd == "conda-env":
         if len(sys.argv) < 3:
             sys.exit(1)
@@ -269,7 +302,7 @@ if __name__ == "__main__":
             sys.exit(1)
         key = sys.argv[2]
         defaults = _defaults_section().get("execution", {})
-        print(get_execution(key).get("default_runner", defaults.get("runner", "conda")))
+        print(get_execution(key).get("default_runner", defaults.get("runner", "pixi")))
     elif cmd == "container-image":
         if len(sys.argv) < 3:
             sys.exit(1)

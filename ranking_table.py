@@ -12,8 +12,11 @@ generates a publication-style ranking table PNG where:
     are proportional to the method's normalised score relative to the best performer.
     The top-N ranked methods also receive a numeric rank label (1, 2, 3 …) inside
     the circle.
-  - Overall ranking is computed from category ranks:
-    final rank = GRN category rank + Cell category rank + Gene category rank.
+  - Overall ranking: within each category (GRN, Cell, Gene) methods are ranked
+    and the rank is mapped to a score (best = 1, last = 1/n). A method's overall
+    score is the mean over the categories it can produce (capabilities from
+    methods_registry.yaml); a capable method with no data in a category (e.g.
+    it failed) scores 0 there.
   - Methods that produced no output for a metric group receive a hollow grey circle.
   - A method capability table is also exported as method_capabilities.csv.
 
@@ -38,6 +41,7 @@ Options:
 import argparse
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -55,28 +59,25 @@ import pandas as pd
 # (csv_column_name, display_label, higher_is_better)
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Non-redundant subset of the metrics in grn_metrics.csv / cell_metrics.csv
+# (all other columns stay in the CSVs and the per-metric plots).
+# GRN: threshold-free, gene→gene edge set (metrics_grn); ratios are relative
+# to a random ranking, so they are comparable across networks.
 GRN_METRICS: List[Tuple[str, str, bool]] = [
-    ("precision",                        "Precision",      True),
-    ("recall",                           "Recall",         True),
-    ("f1_score",                         "F1 Score",       True),
-    ("auprc",                            "AUPRC",          True),
-    ("jaccard_index",                    "Jaccard",        True),
-    ("spearman_correlation",             "Spearman",       True),
-    ("hamming_distance",                 "Hamming",      False),
-    ("edge_overlap_edge_overlap_ratio",  "Edge Overlap",   True),
+    ("genes_edge_auprc_ratio",   "Edge AUPRC",    True),   # are the edges found?
+    ("genes_signed_auprc_ratio", "Signed AUPRC",  True),   # with the right sign?
+    ("genes_edge_auroc",         "AUROC",         True),   # density-insensitive
 ]
 
+# Cells: per test timepoint then averaged, log1p scale (metrics_cells).
 CELL_METRICS: List[Tuple[str, str, bool]] = [
-    ("wasserstein_distance",      "Wasserstein",  False),
-    ("pca_wasserstein_distance",  "PCA Wasserstein",  False),
-    ("kl_divergence",             "KL Div.",      False),
-    ("jensen_shannon_divergence", "JS Div.",      False),
-    ("adjusted_rand_index",       "ARI",             True),
+    ("wasserstein_log",    "Wasserstein",  False),
+    ("js_divergence_log",  "JS Div.",      False),
 ]
 
 GENE_METRICS: List[Tuple[str, str, bool]] = [
-    ("gene_gene_correlation", "Gene Corr.", True),
-    ("top_de_genes_overlap", "Top DE Overlap", True),
+    ("mean_expr_rmse_log",       "Mean Expr. Error", False),
+    ("gene_corr_similarity_log", "Gene Corr.",       True),
 ]
 
 RUNTIME_METRIC: List[Tuple[str, str, bool]] = [
@@ -101,6 +102,7 @@ _CMAP = plt.cm.Blues
 
 _NO_DATA_FC = "#f0f0f0"   # face colour for "no data" placeholder
 _NO_DATA_EC = "#c0c0c0"   # edge colour for "no data" placeholder
+_FAILED_EC = "#c0392b"    # edge / cross colour for "expected but missing"
 
 _MAX_R = 0.38   # maximum circle radius in data units (cell = 1×1)
 _MIN_R = 0.07   # minimum circle radius (score ≈ 0)
@@ -128,14 +130,27 @@ _GAP_GENE_RUNTIME = 0.50
 # Data helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _load_csv(path: Optional[Path]) -> Optional[pd.DataFrame]:
-    """Load a metrics CSV and average each numeric column per method."""
+def _load_csv(path: Optional[Path], perturbation: str = "WT") -> Optional[pd.DataFrame]:
+    """Load a metrics CSV, keep the requested rows and average each numeric
+    column per method (over replicates, folds and, for ``"KO"``, KO genes).
+
+    perturbation: ``"WT"`` keeps wild-type rows (main tables); ``"KO"`` keeps
+    knockout-prediction rows. CSVs without a ``perturbation`` column are
+    treated as wild-type only. Returns None when no row is left.
+    """
     if path is None or not path.is_file():
         return None
     df = pd.read_csv(path)
+    if "perturbation" in df.columns:
+        is_wt = df["perturbation"].astype(str) == "WT"
+        df = df[is_wt] if perturbation == "WT" else df[~is_wt]
+    elif perturbation != "WT":
+        return None
+    if df.empty:
+        return None
     numeric = [
         c for c in df.select_dtypes(include=np.number).columns
-        if c != "replicate"
+        if c not in ("replicate", "fold")
     ]
     return df.groupby("method")[numeric].mean().reset_index()
 
@@ -218,22 +233,71 @@ def _compute_group_score(norm: np.ndarray) -> np.ndarray:
     """Compute per-method mean score for one metric group."""
     if norm.size == 0:
         return np.full(norm.shape[0], np.nan)
-    return np.nanmean(norm, axis=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)  # all-NaN rows → NaN
+        return np.nanmean(norm, axis=1)
 
 
-def _category_rank(group_score: np.ndarray, n_methods: int) -> np.ndarray:
+# Registry capability required for each ranking category.
+_CATEGORY_CAPABILITY: Dict[str, str] = {
+    "grn": "grn_inference",
+    "cell": "trajectory_reconstruction",
+    "gene": "trajectory_reconstruction",
+}
+
+
+def _category_applicable(method: str, category: str, has_data: bool) -> bool:
+    """Whether *category* counts towards *method*'s overall rank.
+
+    Uses the capabilities in methods_registry.yaml; a method missing from the
+    registry is judged by whether it produced data for the category.
     """
-    Rank one group and penalize missing values with rank n_methods + 1.
-    Lower rank is better.
+    caps = _METHOD_CAPABILITIES.get(_strip_perturbation_suffix(method))
+    if caps is None:
+        return has_data
+    return bool(caps.get(_CATEGORY_CAPABILITY[category], False))
+
+
+def _category_scores(group_score: np.ndarray) -> np.ndarray:
+    """Turn group scores into rank scores in (0, 1]: best = 1, last = 1/n.
+
+    Only methods with data are ranked; the others get NaN. Keeping the last
+    place above 0 distinguishes it from a missing output (scored 0).
     """
-    ranks = np.full(n_methods, n_methods + 1, dtype=float)
-    valid_idx = np.where(~np.isnan(group_score))[0]
-    if len(valid_idx) == 0:
-        return ranks
-    order = valid_idx[np.argsort(-group_score[valid_idx])]
-    for rank, idx in enumerate(order, start=1):
-        ranks[idx] = float(rank)
-    return ranks
+    out = np.full(len(group_score), np.nan)
+    valid = np.where(~np.isnan(group_score))[0]
+    if len(valid) == 0:
+        return out
+    order = valid[np.argsort(-group_score[valid], kind="stable")]
+    n = len(order)
+    for rank, idx in enumerate(order):
+        out[idx] = 1.0 - rank / n
+    return out
+
+
+def overall_scores_from_categories(
+    methods: List[str], category_group_scores: Dict[str, np.ndarray],
+) -> np.ndarray:
+    """Overall score = mean of the category rank scores over the categories a
+    method can produce. A capable method without data in a category (e.g. it
+    failed) scores 0 there; categories it cannot produce are ignored."""
+    # A category without data for any method is not part of this table
+    # (e.g. GRN in the KO-prediction table): it is ignored for everyone.
+    category_group_scores = {
+        c: g for c, g in category_group_scores.items() if not np.all(np.isnan(g))
+    }
+    per_cat = {c: _category_scores(g) for c, g in category_group_scores.items()}
+    overall = np.full(len(methods), np.nan)
+    for i, method in enumerate(methods):
+        scores = []
+        for cat, cat_scores in per_cat.items():
+            has_data = not np.isnan(category_group_scores[cat][i])
+            if not _category_applicable(method, cat, has_data):
+                continue
+            scores.append(cat_scores[i] if has_data else 0.0)
+        if scores:
+            overall[i] = float(np.mean(scores))
+    return overall
 
 
 def _strip_perturbation_suffix(method: str) -> str:
@@ -355,7 +419,7 @@ def _draw_circle(
         )
 
 
-def _draw_no_data(ax: plt.Axes, cx: float, cy: float) -> None:
+def _draw_no_data(ax: plt.Axes, cx: float, cy: float, clip_on: bool = True) -> None:
     """Draw an empty (hollow) placeholder circle for missing data."""
     ax.add_patch(
         mpatches.Circle(
@@ -364,8 +428,37 @@ def _draw_no_data(ax: plt.Axes, cx: float, cy: float) -> None:
             edgecolor=_NO_DATA_EC,
             linewidth=0.6,
             zorder=3,
+            clip_on=clip_on,
         )
     )
+
+
+def _draw_failed(ax: plt.Axes, cx: float, cy: float, clip_on: bool = True) -> None:
+    """Draw a red-outlined circle with a cross: the method should produce this
+    output (registry capability) but no result was found (e.g. it failed)."""
+    r = _MAX_R * 0.48
+    ax.add_patch(
+        mpatches.Circle(
+            (cx, cy), r,
+            facecolor="#fdf0ee",
+            edgecolor=_FAILED_EC,
+            linewidth=0.9,
+            zorder=3,
+            clip_on=clip_on,
+        )
+    )
+    d = r * 0.55
+    for sx in (-1, 1):
+        ax.plot([cx - d, cx + d], [cy - sx * d, cy + sx * d],
+                color=_FAILED_EC, linewidth=1.0, zorder=4, solid_capstyle="round",
+                clip_on=clip_on)
+
+
+def _draw_missing(ax: plt.Axes, cx: float, cy: float, failed: bool) -> None:
+    if failed:
+        _draw_failed(ax, cx, cy)
+    else:
+        _draw_no_data(ax, cx, cy)
 
 
 def _draw_rank_bar(
@@ -510,6 +603,7 @@ def render_ranking_table(
     runtime_metric_name: Optional[str] = None,
     top_n: int = 3,
     title: str = "",
+    failed: Optional[Dict[str, np.ndarray]] = None,
 ) -> plt.Figure:
     """
     Build and return the ranking-table figure.
@@ -528,6 +622,10 @@ def render_ranking_table(
     runtime_ranks     : (n_methods, n_runtime) per-metric integer ranks (1 = best).
     grn_metric_names  : Display labels for GRN metric columns.
     cell_metric_names : Display labels for Cell metric columns.
+    failed            : Optional {"grn"|"cell"|"gene": bool array (n_methods)}:
+                        True where the method should produce the category but
+                        has no result (drawn with the "failed" marker instead
+                        of the plain "no data" circle).
     gene_metric_names : Display labels for Gene metric columns.
     runtime_metric_name : Display label for runtime metric column (if present).
     top_n             : How many top performers receive a numeric label.
@@ -794,7 +892,7 @@ def render_ranking_table(
             score = grn_norm[i, j]
             rank = int(grn_ranks[i, j])
             if np.isnan(score):
-                _draw_no_data(ax, layout.x_grn(j), y)
+                _draw_missing(ax, layout.x_grn(j), y, bool(failed is not None and failed["grn"][i]))
             else:
                 _draw_circle(ax, layout.x_grn(j), y, float(score), rank, top_n)
 
@@ -803,7 +901,7 @@ def render_ranking_table(
             score = cell_norm[i, j]
             rank = int(cell_ranks[i, j])
             if np.isnan(score):
-                _draw_no_data(ax, layout.x_cell(j), y)
+                _draw_missing(ax, layout.x_cell(j), y, bool(failed is not None and failed["cell"][i]))
             else:
                 _draw_circle(ax, layout.x_cell(j), y, float(score), rank, top_n)
 
@@ -812,7 +910,7 @@ def render_ranking_table(
             score = gene_norm[i, j]
             rank = int(gene_ranks[i, j])
             if np.isnan(score):
-                _draw_no_data(ax, layout.x_gene(j), y)
+                _draw_missing(ax, layout.x_gene(j), y, bool(failed is not None and failed["gene"][i]))
             else:
                 _draw_circle(ax, layout.x_gene(j), y, float(score), rank, top_n)
 
@@ -867,7 +965,7 @@ def render_ranking_table(
             mpatches.Circle(
                 (lx, leg_y_graphics), _circle_radius(sc),
                 facecolor="#8dafd4", edgecolor="white",
-                linewidth=0.5, zorder=3,
+                linewidth=0.5, zorder=3, clip_on=False,
             )
         )
         if lbl:
@@ -899,6 +997,7 @@ def render_ranking_table(
                 cb_w / n_steps, cb_h,
                 facecolor=_score_color(frac),
                 edgecolor="none",
+                clip_on=False,
             )
         )
     ax.add_patch(
@@ -906,15 +1005,22 @@ def render_ranking_table(
             (cb_x0, cb_y0), cb_w, cb_h,
             facecolor="none", edgecolor="#888888",
             linewidth=0.6,
+            clip_on=False,
         )
     )
     ax.text(cb_x0, cb_y0 - 0.22, "0", ha="center", va="top", fontsize=6.0, color="#555555")
     ax.text(cb_x0 + cb_w, cb_y0 - 0.22, "1", ha="center", va="top", fontsize=6.0, color="#555555")
 
-    # 4. No-data indicator
-    _draw_no_data(ax, x4, leg_y_graphics)
+    # 4. Missing-data indicators
+    _draw_no_data(ax, x4, leg_y_graphics + 0.30, clip_on=False)
     ax.text(
-        x4 + 0.50, leg_y_graphics, "= No data",
+        x4 + 0.50, leg_y_graphics + 0.30, "= Not produced by this method",
+        ha="left", va="center",
+        fontsize=7.0, color="#555555",
+    )
+    _draw_failed(ax, x4, leg_y_graphics - 0.45, clip_on=False)
+    ax.text(
+        x4 + 0.50, leg_y_graphics - 0.45, "= Expected but missing (failed)",
         ha="left", va="center",
         fontsize=7.0, color="#555555",
     )
@@ -979,18 +1085,30 @@ def _build_and_save_ranking_table(
     grn_group = _compute_group_score(grn_norm)
     cell_group = _compute_group_score(cell_norm)
     gene_group = _compute_group_score(gene_norm)
-    grn_rank = _category_rank(grn_group, n_methods)
-    cell_rank = _category_rank(cell_group, n_methods)
-    gene_rank = _category_rank(gene_group, n_methods)
-
-    overall_rank_sum = grn_rank + cell_rank + gene_rank
-    sort_idx = np.argsort(overall_rank_sum)
+    overall_mean = overall_scores_from_categories(
+        methods, {"grn": grn_group, "cell": cell_group, "gene": gene_group},
+    )
+    # Best overall first; methods without any applicable category last.
+    sort_idx = np.array(sorted(
+        range(n_methods),
+        key=lambda i: (np.isnan(overall_mean[i]), -np.nan_to_num(overall_mean[i]), methods[i]),
+    ), dtype=int)
     overall_order_rank = np.empty(n_methods, dtype=float)
     overall_order_rank[sort_idx] = np.arange(1, n_methods + 1, dtype=float)
     if n_methods == 1:
         overall_scores = np.array([1.0], dtype=float)
     else:
         overall_scores = 1.0 - (overall_order_rank - 1.0) / float(n_methods - 1)
+
+    # Capable of a category (registry) but no result there → "failed" marker.
+    failed_s: Dict[str, np.ndarray] = {}
+    for cat, group in (("grn", grn_group), ("cell", cell_group), ("gene", gene_group)):
+        table_has_cat = not np.all(np.isnan(group))
+        flags = np.array([
+            table_has_cat and np.isnan(group[i]) and _category_applicable(methods[i], cat, False)
+            for i in range(n_methods)
+        ], dtype=bool)
+        failed_s[cat] = flags[sort_idx]
 
     methods_s = [methods[i] for i in sort_idx]
     overall_s = overall_scores[sort_idx]
@@ -1026,6 +1144,7 @@ def _build_and_save_ranking_table(
         runtime_metric_name=runtime_name,
         top_n=top_n,
         title=title,
+        failed=failed_s,
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1087,8 +1206,11 @@ def main(argv: Optional[List[str]] = None) -> None:
     )
 
     # ── load data ────────────────────────────────────────────────────────────
-    grn_df = _load_csv(grn_csv_path)
-    cell_df = _load_csv(cell_csv_path)
+    # Main tables: wild-type rows only, so every method is compared on the
+    # same task. KO predictions get their own table (cells only).
+    grn_df = _load_csv(grn_csv_path, "WT")
+    cell_df = _load_csv(cell_csv_path, "WT")
+    ko_cell_df = _load_csv(cell_csv_path, "KO")
 
     if grn_df is None and cell_df is None:
         print(
@@ -1170,6 +1292,22 @@ def main(argv: Optional[List[str]] = None) -> None:
             "INFO: No perturbation-training methods found; "
             "skipping perturbation-only ranking table."
         )
+
+    # KO-prediction table: methods' predicted KO cells vs simulated KO cells
+    # (averaged over KO genes), only for methods that produced KO predictions.
+    if ko_cell_df is not None:
+        ko_methods = sorted(ko_cell_df["method"].tolist())
+        _build_and_save_ranking_table(
+            grn_df=None,
+            cell_df=ko_cell_df,
+            methods=ko_methods,
+            output_path=output_path.with_name(f"{output_path.stem}_ko_prediction{output_path.suffix}"),
+            top_n=args.top_n,
+            title=(f"{args.title} (KO prediction)" if args.title
+                   else f"KO Prediction Ranking — {run_dir.name}"),
+        )
+    else:
+        print("INFO: No scored KO predictions; skipping KO-prediction ranking table.")
 
 
 if __name__ == "__main__":

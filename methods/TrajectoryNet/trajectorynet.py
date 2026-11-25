@@ -53,7 +53,7 @@ def _load_adata(inputfile: str) -> ad.AnnData:
     adata = ad.read_h5ad(inputfile)
     if scipy.sparse.issparse(adata.X):
         adata.X = adata.X.toarray()
-    if len(np.unique(adata.obs["dataset_id"])) > 1:
+    if "dataset_id" in adata.obs.columns and len(np.unique(adata.obs["dataset_id"])) > 1:
         adata = adata[adata.obs["dataset_id"] == "WT"].copy()
     return adata
 
@@ -103,8 +103,8 @@ def _train_trajectorynet(
     subprocess.run(
         cmd,
         check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,  # verbose training log
+        # stderr is kept so that training errors are visible in the run log
     )
 
 
@@ -188,6 +188,8 @@ def main(argv):
     inputfile = ""
     outputfolder = ""
     output_mode = "full_test"
+    np.random.seed(0)
+    torch.manual_seed(0)
 
     try:
         opts, _ = getopt.getopt(

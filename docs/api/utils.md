@@ -5,12 +5,18 @@
       show_root_heading: true
       show_source: false
       members:
-        - get_registry
+        - load_registry
+        - list_method_keys
+        - get_iteration_order
         - get_method
-        - get_method_keys
+        - get_entrypoint
+        - get_execution
+        - get_capabilities
         - get_capabilities_table
-        - get_execution_config
-        - build_execution_json
+        - export_execution_json
+        - list_container_images
+        - pixi_environments
+        - cuda_pixi_envs
 
 ---
 

@@ -1,21 +1,9 @@
 # Methods Registry
 
-The `methods_registry.yaml` file is the canonical reference for all
-method metadata in TrajGRN-Bench. Every downstream consumer derives its
-configuration from this file.
-
-## Why a Registry?
-
-Before the registry, adding a new method required touching 6+ files:
-
-- `benchmark_run.sh` — default method list
-- `single_run.sh` — entrypoint parameters
-- `ranking_table.py` — capabilities
-- `containers/Makefile` — build targets
-- `containers/build_all.sh` — build targets
-- `configs/benchmark.schema.json` — validation
-
-Now, you only need to edit **one file**: `methods_registry.yaml`.
+`methods_registry.yaml` is the single source of truth for method metadata:
+entrypoint, CLI flags, execution environment (pixi env / Docker image) and
+capabilities. The shell scripts, the config builder, the image build tooling
+and the ranking table all read it.
 
 ## Registry Structure
 
@@ -33,109 +21,83 @@ methods:
     entrypoint:
       type: python               # python | bash
       script: methods/foo/run.py
-      pass_output_mode: true     # Pass --output_mode flag
-      pass_ko_genes: false       # Pass --ko_genes flag
-      supports_perturbation_training: false
-      extra_args:                # Always-passed CLI args
+      pass_output_mode: true     # pass -u <output_mode>
+      pass_ko_genes: false       # pass -k <ko_genes>
+      supports_perturbation_training: false   # pass -p; adds a _perturbation_training variant
+      extra_args:                # always-passed CLI args
         - "--flag"
         - "value"
 
     execution:
-      default_runner: docker     # docker | conda | apptainer
-      conda_env: env_name
+      default_runner: docker     # docker | apptainer | pixi | conda (legacy)
+      pixi_env: foo              # environment in pixi.toml (local runs and image)
       container:
-        image: benchmark/method:latest
-        env_file: environments/method.yml
-        env_name: env_name
+        image: benchmark/foo:latest   # built from pixi env "foo"
 
     capabilities:
       grn_inference: true
       trajectory_reconstruction: true
       perturbation_training: false
 
+defaults:
+  execution:
+    runner: pixi
+    pixi_env: baselines
+    container_engine: docker
+    container_image: benchmark/baselines:latest
+
 iteration_order:
   - MethodOne
   - MethodTwo
-  # ... controls display order in tables
 ```
+
+### Runner selection
+
+For each method, the runner is (highest priority first): the config's
+`execution.method_runners[method]`, the config's `execution.default_runner`,
+the registry's `execution.default_runner`, the registry default.
+`execution.container_engine: apptainer` replaces Docker by Apptainer, and
+`execution.gpu: true` uses the `<pixi_env>-cuda` environment / image when
+`pixi.toml` defines one.
 
 ## Python API
 
-The `utils/methods_registry.py` module provides programmatic access:
-
 ```python
 from utils.methods_registry import (
-    get_registry,
-    get_method,
-    get_method_keys,
-    get_capabilities_table,
-    get_execution_config,
+    load_registry, list_method_keys, get_iteration_order,
+    get_method, get_entrypoint, get_execution, get_capabilities,
+    get_capabilities_table, export_execution_json,
+    list_container_images, pixi_environments, cuda_pixi_envs,
 )
 
-# Get all registered methods
-registry = get_registry()
-print(registry["methods"].keys())
-
-# Get a specific method
-method = get_method("FLeCS")
-print(method["capabilities"])
-
-# Get capabilities as a DataFrame
-caps = get_capabilities_table()
-print(caps)
-
-# Get execution config (merges registry + user overrides)
-exec_cfg = get_execution_config(user_overrides={...})
+print(get_execution("FLeCS")["pixi_env"])       # "flecs"
+print(get_capabilities_table()["GENIE3"])        # {"grn_inference": True, ...}
+print(list_container_images()[0])                # {"target": ..., "image": ..., "platforms": [...]}
 ```
 
 ## CLI Reference
 
-For shell scripts (used by `single_run.sh`, `build_all.sh`, etc.):
-
 ```bash
-# List all method keys
-python utils/methods_registry.py keys
-
-# Get entrypoint info for a method
-python utils/methods_registry.py entrypoint FLeCS
-
-# Get full execution config as JSON
-python utils/methods_registry.py execution-json
-
-# Get capabilities as JSON
-python utils/methods_registry.py capabilities-json
-
-# Get default enabled methods JSON
-python utils/methods_registry.py default-methods-json
-
-# List container image build specs
-python utils/methods_registry.py container-images
-
-# Check if a method supports perturbation training
+python utils/methods_registry.py keys                      # methods in iteration order
+python utils/methods_registry.py entrypoint FLeCS          # type|script|pass_out|pass_ko|pert|extra
 python utils/methods_registry.py supports-perturbation FLeCS
-
-# Get the conda environment name for a method
-python utils/methods_registry.py conda-env FLeCS
-
-# Get the runner mode (docker/conda/apptainer)
-python utils/methods_registry.py runner-mode FLeCS
-
-# Get the container image name
-python utils/methods_registry.py container-image FLeCS
+python utils/methods_registry.py runner-mode FLeCS         # docker | apptainer | pixi | conda
+python utils/methods_registry.py pixi-env FLeCS            # flecs
+python utils/methods_registry.py pixi-envs                 # environments declared in pixi.toml
+python utils/methods_registry.py container-image FLeCS     # benchmark/flecs:latest
+python utils/methods_registry.py container-images          # image build specs (JSON)
+python utils/methods_registry.py execution-json            # registry execution settings (JSON)
+python utils/methods_registry.py capabilities-json
+python utils/methods_registry.py default-methods-json
 ```
 
-## Auto-Generated Artifacts
-
-When you run `python utils/methods_registry.py` with certain flags, it
-generates:
+## Consumers
 
 | Consumer | How it uses the registry |
 |----------|-------------------------|
-| `single_run.sh` | Calls `_registry_query` which invokes registry CLI |
-| `benchmark_run.sh` | `python utils/methods_registry.py default-methods-json` |
-| `ranking_table.py` | `from utils.methods_registry import get_capabilities_table` |
-| `benchmark_run_config.py` | `build_execution_json()` merges registry + overrides |
-| `configs/benchmark.schema.json` | `run_methods` propertyNames enum |
-| `containers/Makefile` | Targets auto-generated from registry |
-| `containers/build_all.sh` | `ALL_IMAGES` auto-generated |
-| `docs/_scripts/generate_methods.py` | Auto-generates method pages |
+| `single_run.sh` | entrypoint, runner, pixi env and image per method (`_registry_query`, `BENCHMARK_EXECUTION_JSON`) |
+| `benchmark_run.sh` | default enabled methods |
+| `benchmark_run_config.py` | `build_execution_json()` merges registry + config overrides |
+| `ranking_table.py` | capabilities (which categories count for each method) |
+| `containers/build_all.sh`, `containers/Makefile` | one image per `pixi_env` (+ `-cuda` variants) |
+| `docs/_scripts/generate_methods.py` | method pages |

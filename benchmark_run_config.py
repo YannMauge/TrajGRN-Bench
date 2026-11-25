@@ -20,14 +20,14 @@ from typing import Any, Dict, Optional
 DEFAULTS = {
     "train_data": "future",
     "output_mode": "full_test",
-    "simulation": "simul_ko",
+    "simulation": "simul_replicates",
     "global_run_name": "test_run_3",
     "future_start_tp": 10,
     "replicates_number": 2,
     "simul_ko_genes": "all",
     "ko_output_genes": "none",
     "restart_mode": "save",
-    "perturbation_training": True,
+    "perturbation_training": False,
     "simulator_backend": "harissa",
 }
 
@@ -119,6 +119,12 @@ def build_execution_json(config: Dict[str, Any]) -> str:
 
     execution = _get_section(config, "execution")
 
+    # Runner precedence: config method_runners[m] > config default_runner >
+    # registry per-method default_runner > registry default. A default_runner
+    # set in the config therefore replaces the registry's per-method runners.
+    if execution.get("default_runner") is not None:
+        base["method_runners"] = {}
+
     # Merge user overrides (shallow merge for each sub-dict)
     for key in ("conda_envs", "container_images", "method_runners"):
         if key in execution and isinstance(execution[key], dict):
@@ -128,11 +134,11 @@ def build_execution_json(config: Dict[str, Any]) -> str:
     for key in ("default_runner", "container_engine"):
         if key in execution and execution[key] is not None:
             base[key] = execution[key]
+    if "pixi_envs" in execution and isinstance(execution["pixi_envs"], dict):
+        base.setdefault("pixi_envs", {}).update(execution["pixi_envs"])
+    if execution.get("gpu") is not None:
+        base["gpu"] = bool(execution["gpu"])
 
-    # Also handle top-level conda_envs.default override
-    if "runner_env" in execution:
-        base.setdefault("conda_envs", {})
-        base["conda_envs"]["default"] = execution["runner_env"]
 
     import json as _json
     return _json.dumps(base, separators=(",", ":"))
@@ -140,9 +146,6 @@ def build_execution_json(config: Dict[str, Any]) -> str:
 
 def build_args(config: Dict[str, Any]) -> Dict[str, Any]:
     benchmark = _get_section(config, "benchmark")
-    simulation = _get_section(config, "simulation")
-    paths = _get_section(config, "paths")
-    execution = _get_section(config, "execution")
     simulation = _get_section(config, "simulation")
     paths = _get_section(config, "paths")
     execution = _get_section(config, "execution")
@@ -177,8 +180,10 @@ def build_args(config: Dict[str, Any]) -> Dict[str, Any]:
     input_dir = paths.get("input_dir")
     adata_dir = paths.get("adata_dir")
     results_dir = paths.get("results_dir")
+    metrics_dir = paths.get("metrics_dir")
 
     runner_env = execution.get("runner_env")
+    runner_tool = execution.get("runner_tool")
 
     return {
         "train_data": train_data,
@@ -196,12 +201,18 @@ def build_args(config: Dict[str, Any]) -> Dict[str, Any]:
         "input_dir": input_dir,
         "adata_dir": adata_dir,
         "results_dir": results_dir,
+        "metrics_dir": metrics_dir,
         "execution_json": build_execution_json(config),
         "runner_env": runner_env,
+        "runner_tool": runner_tool,
+        # Optional simulator settings (passed to every simulator driver)
+        "sim_n_cells": simulation.get("n_cells"),
+        "sim_n_time_bins": simulation.get("n_time_bins"),
+        "sim_seed": simulation.get("seed"),
     }
 
 
-def run_benchmark(config_path: Path) -> None:
+def run_benchmark(config_path: Path) -> int:
     config = load_config(config_path)
 
     # Validate against JSON Schema early to catch misconfigurations
@@ -238,14 +249,24 @@ def run_benchmark(config_path: Path) -> None:
     env["BENCHMARK_EXECUTION_JSON"] = args["execution_json"]
     if args["runner_env"]:
         env["BENCHMARK_RUNNER_ENV"] = str(args["runner_env"])
+    if args["runner_tool"]:
+        env["BENCHMARK_RUNNER_TOOL"] = str(args["runner_tool"])
+    for key, var in (("sim_n_cells", "BENCHMARK_SIM_N_CELLS"),
+                     ("sim_n_time_bins", "BENCHMARK_SIM_N_TIME_BINS"),
+                     ("sim_seed", "BENCHMARK_SIM_SEED")):
+        if args[key] is not None:
+            env[var] = str(args[key])
     if args["input_dir"]:
         env["BENCHMARK_INPUT_DIR"] = str(args["input_dir"])
     if args["adata_dir"]:
         env["BENCHMARK_ADATA_DIR"] = str(args["adata_dir"])
     if args["results_dir"]:
         env["BENCHMARK_RESULTS_DIR"] = str(args["results_dir"])
+    if args["metrics_dir"]:
+        env["BENCHMARK_METRICS_DIR"] = str(args["metrics_dir"])
 
-    subprocess.run(command, check=True, env=env, cwd=repo_root)
+    # Propagate the exit code (3 = some methods failed, summary already printed)
+    return subprocess.run(command, env=env, cwd=repo_root).returncode
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -254,13 +275,13 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     try:
-        run_benchmark(Path(args.config))
+        return run_benchmark(Path(args.config))
     except ConfigError as exc:
         print(f"Config error: {exc}", file=sys.stderr)
         return 2
-    except subprocess.CalledProcessError as exc:
-        return exc.returncode
-    return 0
+    except Exception as exc:  # e.g. jsonschema.ValidationError
+        print(f"Config error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -1,98 +1,84 @@
 #!/usr/bin/env python3
-"""
-dynGENIE3_ontrain.py — Benchmark entrypoint for dynGENIE3.
+"""dynGENIE3_ontrain.py — benchmark entrypoint for dynGENIE3
+(Huynh-Thu & Geurts, Scientific Reports 2018; vendored upstream code).
 
-dynGENIE3 is a semi-parametric approach for GRN inference from time-series
-expression data (Huynh-Thu & Geurts, Scientific Reports 2018).
+dynGENIE3 needs time series of the same samples, which snapshot scRNA-seq
+does not provide. We build ``N_SERIES`` bootstrapped pseudo-bulk series: for
+each series and each training timepoint, the mean (log-normalised) expression
+of a random subset (``SUBSET_FRACTION``, with replacement) of the WT cells at
+that timepoint. dynGENIE3 natively accepts several series, so each tree sees
+N_SERIES × (T − 1) transitions instead of T − 1 with a single averaged series.
+
+dynGENIE3 returns VIM[i, j] = importance of gene i for target j
+(regulator × target), the benchmark orientation. It has no seed argument:
+numpy's global RNG (used by its random forests) is seeded before the run.
 
 Usage:
     python dynGENIE3_ontrain.py -i <input_h5ad> -o <output_folder>
-
-The script aggregates scRNA-seq cells by timepoint (mean expression) to
-produce pseudo-bulk time series suitable for dynGENIE3's finite-difference
-formulation, then saves the VIM matrix as `<data_id>_GRN.npy`.
 """
-
-import numpy as np
-import scipy
-import scanpy as sc
-import anndata as ad
-import sys
 import getopt
 import os
-
-from dynGENIE3 import dynGENIE3
-
+import sys
 import warnings
-for module in ["anndata", "scipy", "scanpy"]:
-    warnings.filterwarnings("ignore", module=module)
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from dynGENIE3 import dynGENIE3  # noqa: E402
+from _common import (  # noqa: E402
+    T_KEY, load_training_data, log_normalize_genes, save_grn, seed_everything, variable_columns,
+)
+
+warnings.filterwarnings("ignore")
+
+SEED = 0
+N_SERIES = 20
+SUBSET_FRACTION = 0.5
+
+
+def bootstrap_series(x, times, n_series=N_SERIES, fraction=SUBSET_FRACTION, seed=SEED):
+    """Return (TS_data, time_points) for dynGENIE3 from snapshot cells."""
+    rng = np.random.default_rng(seed)
+    tps = np.sort(np.unique(times))
+    if len(tps) < 2:
+        raise ValueError(f"dynGENIE3 needs at least 2 training timepoints, got {tps.tolist()}")
+    idx_by_tp = [np.flatnonzero(times == tp) for tp in tps]
+    series = []
+    for _ in range(n_series):
+        rows = []
+        for idx in idx_by_tp:
+            k = max(1, int(round(fraction * len(idx))))
+            rows.append(x[rng.choice(idx, size=k, replace=True)].mean(axis=0))
+        series.append(np.vstack(rows))
+    return series, [tps.astype(np.float64) for _ in range(n_series)]
 
 
 def main(argv):
-    t_key = "timepoint"
-    lognorm = 1
-    inputfile = ""
-    outputfolder = ""
-
-    try:
-        opts, args = getopt.getopt(argv, "hi:o:", ["input=", "outputfolder="])
-    except getopt.GetoptError as err:
-        print(err, file=sys.stderr)
-        sys.exit(2)
-
+    inputfile, outputfolder = "", ""
+    opts, _ = getopt.getopt(argv, "hi:o:", ["input=", "outputfolder="])
     for opt, arg in opts:
         if opt in ("-i", "--input"):
             inputfile = arg
-        if opt in ("-o", "--outputfolder"):
+        elif opt in ("-o", "--outputfolder"):
             outputfolder = arg
+    if not os.path.exists(inputfile):
+        raise FileNotFoundError(f"Error reading h5ad file: {inputfile}")
 
-    if not os.path.exists(outputfolder):
-        os.makedirs(outputfolder)
+    seed_everything(SEED)
+    adata, _, _ = load_training_data(inputfile)
+    x = log_normalize_genes(adata.X, adata.var_names)
+    # Constant variables (e.g. a knocked-out gene) carry no signal and break
+    # the per-target normalisation of the random forests: score them 0.
+    keep = variable_columns(x)
+    ts_data, time_points = bootstrap_series(x[:, keep], adata.obs[T_KEY].to_numpy(dtype=float))
 
-    # ── Load data ───────────────────────────────────────────────────────
-    data_path = os.path.join(inputfile)
-    if os.path.exists(data_path):
-        adata = ad.read_h5ad(data_path)
-    else:
-        raise FileNotFoundError(f"Error reading h5ad file: {data_path}")
-
-    if scipy.sparse.issparse(adata.X):
-        adata.X = adata.X.toarray()
-
-    # ── Filter to training timepoints ───────────────────────────────────
-    path_data_folder = os.path.dirname(inputfile)
-    train_tps = np.load(os.path.join(path_data_folder, "train_tps.npy"))[:, 1]
-    adata = adata[adata.obs[t_key].isin(train_tps)].copy()
-
-    # ── Normalize (optional, matching GENIE3 baseline) ───────────────────
-    if lognorm:
-        sc.pp.normalize_total(adata)
-        sc.pp.log1p(adata)
-
-    # ── Aggregate cells per timepoint (mean) for pseudo-bulk time series ─
-    # dynGENIE3 expects TS_data as a list of arrays, each of shape
-    # (n_timepoints, n_genes), with one row per time point.
-    unique_tps = sorted(adata.obs[t_key].unique())
-    mean_expr = np.zeros((len(unique_tps), adata.n_vars))
-    for i, tp in enumerate(unique_tps):
-        mask = adata.obs[t_key] == tp
-        mean_expr[i, :] = adata.X[mask].mean(axis=0)
-
-    TS_data = [mean_expr]
-    time_points = [np.array(unique_tps, dtype=np.float64)]
-
-    # ── Run dynGENIE3 ───────────────────────────────────────────────────
-    VIM, alphas, _, _, _ = dynGENIE3(TS_data, time_points, alpha="from_data")
-
-    # ── Save GRN ────────────────────────────────────────────────────────
-    data_id = os.path.splitext(os.path.basename(inputfile))[0]
-    np.save(os.path.join(outputfolder, f"{data_id}_GRN"), VIM)
-
-    # ── Write .done marker ──────────────────────────────────────────────
-    done_path = os.path.join(outputfolder, f"{data_id}.done")
-    open(done_path, "w").close()
-
-    print(f"dynGENIE3 completed. GRN saved to {outputfolder}")
+    VIM_sub, _, _, _, _ = dynGENIE3(ts_data, time_points, alpha="from_data")
+    VIM = np.zeros((x.shape[1], x.shape[1]))
+    VIM[np.ix_(keep, keep)] = VIM_sub
+    path = save_grn(outputfolder, inputfile, VIM, adata.var_names)
+    print(f"dynGENIE3 completed. GRN saved to {path}")
 
 
 if __name__ == "__main__":

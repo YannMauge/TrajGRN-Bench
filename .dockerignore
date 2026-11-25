@@ -1,0 +1,4 @@
+# Only pixi.toml / pixi.lock are needed to build the images.
+*
+!pixi.toml
+!pixi.lock

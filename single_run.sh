@@ -22,12 +22,21 @@ results_dir="$2"
 run_methods_json="$3"
 output_mode="${4:-full_test}"
 ko_output_genes="${5:-none}"
-perturbation_training="${6:-true}"
+perturbation_training="${6:-false}"
 restart_mode="${7:-save}"
 
 # =============================================================================
 # Logging Functions
 # =============================================================================
+
+# SHA-256 of stdin, portable across Linux (sha256sum) and macOS (shasum).
+sha256_stdin() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum | awk '{print $1}'
+    else
+        shasum -a 256 | awk '{print $1}'
+    fi
+}
 
 log()         { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"; }
 log_error()   { echo "[$(date '+%Y-%m-%d %H:%M:%S')] ERROR: $1" >&2; }
@@ -40,27 +49,33 @@ log_warning() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] WARNING: $1" >&2; }
 EXECUTION_JSON="${BENCHMARK_EXECUTION_JSON:-}"
 
 # ── Registry query helper ───────────────────────────────────────────
-# Calls utils/methods_registry.py for any CLI command and caches results
-# in a temp file keyed by method+command to avoid repeated Python startup.
-# Usage: _registry_query <command> <method_key>
+# Calls utils/methods_registry.py for any CLI command and caches the answer
+# in a temp file keyed by command+method, so each query starts Python once
+# per run (the registry does not change during a run).
+# Usage: _registry_query <command> [method_key]
+_REGISTRY_CACHE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/trajgrn-registry.XXXXXX")"
 _registry_query() {
-    local cmd="$1" method="$2"
-    python "$SCRIPT_DIR/utils/methods_registry.py" "$cmd" "$method"
+    local cmd="$1" method="${2:-}"
+    local cache="$_REGISTRY_CACHE_DIR/${cmd}__${method}"
+    if [ ! -f "$cache" ]; then
+        python "$SCRIPT_DIR/utils/methods_registry.py" "$cmd" ${method:+"$method"} > "$cache.tmp" \
+            && mv "$cache.tmp" "$cache" || { rm -f "$cache.tmp"; return 1; }
+    fi
+    cat "$cache"
 }
 
 method_runner_mode() {
     local method="$1"
     if [ -n "$EXECUTION_JSON" ]; then
         local mode
-        mode=$(echo "$EXECUTION_JSON" | jq -r --arg method "$method" '.method_runners[$method] // .default_runner // empty' 2>/dev/null)
+        # method_runners already encodes the precedence resolved by
+        # benchmark_run_config.py; container_engine picks the engine used for
+        # container runs (docker or apptainer).
+        mode=$(echo "$EXECUTION_JSON" | jq -r --arg method "$method" '
+            (.method_runners[$method] // .default_runner // empty) as $m
+            | if $m == "docker" and (.container_engine // "") != "" then .container_engine else $m end' 2>/dev/null)
         if [ -n "$mode" ] && [ "$mode" != "null" ]; then
             echo "$mode"
-            return
-        fi
-        local engine
-        engine=$(echo "$EXECUTION_JSON" | jq -r '.container_engine // empty' 2>/dev/null)
-        if [ -n "$engine" ] && [ "$engine" != "null" ]; then
-            echo "$engine"
             return
         fi
     fi
@@ -81,6 +96,25 @@ method_conda_env() {
     _registry_query conda-env "$method"
 }
 
+method_pixi_env() {
+    local method="$1" env=""
+    if [ -n "$EXECUTION_JSON" ]; then
+        env=$(echo "$EXECUTION_JSON" | jq -r --arg method "$method" '.pixi_envs[$method] // .pixi_envs.default // empty' 2>/dev/null)
+    fi
+    [ -n "$env" ] && [ "$env" != "null" ] || env=$(_registry_query pixi-env "$method")
+    echo "$env"
+}
+
+# GPU runs (execution.gpu: true): use the "<env>-cuda" pixi environment /
+# "benchmark/<env>-cuda" image when the method's environment has one.
+gpu_enabled() {
+    [ -n "$EXECUTION_JSON" ] && [ "$(echo "$EXECUTION_JSON" | jq -r '.gpu // false' 2>/dev/null)" = "true" ]
+}
+
+has_cuda_variant() {  # <pixi_env>
+    [ -n "$EXECUTION_JSON" ] && echo "$EXECUTION_JSON" | jq -e --arg env "$1" '(.cuda_envs // []) | index($env) != null' >/dev/null 2>&1
+}
+
 method_container_image() {
     local method="$1"
     if [ -n "$EXECUTION_JSON" ]; then
@@ -92,6 +126,20 @@ method_container_image() {
         fi
     fi
     _registry_query container-image "$method"
+}
+
+# Directories that must be visible inside containers, as unique absolute
+# paths. They are mounted at the *same* path as on the host, so any path
+# passed to a method (absolute or relative to the cwd) resolves identically.
+container_mount_dirs() {
+    local d abs seen="|"
+    for d in "$SCRIPT_DIR" "$PWD" "$adata_dir" "$results_dir"; do
+        [ -n "$d" ] && [ -d "$d" ] || continue
+        abs="$(cd "$d" && pwd)"
+        case "$seen" in *"|$abs|"*) continue ;; esac
+        seen="$seen$abs|"
+        printf '%s\n' "$abs"
+    done
 }
 
 method_exec() {
@@ -107,6 +155,24 @@ method_exec() {
     mode=$(method_runner_mode "$method")
 
     case "$mode" in
+        pixi)
+            # Activate the method's pixi environment in a subshell and exec the
+            # command directly (arguments are passed through unchanged).
+            local env
+            env=$(method_pixi_env "$method")
+            if gpu_enabled && has_cuda_variant "$env"; then
+                env="${env}-cuda"
+            fi
+            if ! command -v pixi >/dev/null 2>&1; then
+                log_error "pixi not found. Install pixi (https://pixi.sh) or switch runner mode."
+                return 1
+            fi
+            (
+                eval "$(pixi shell-hook --manifest-path "$SCRIPT_DIR/pixi.toml" -e "$env" -s bash)" || exit 1
+                export BENCHMARK_RUNNER_MODE=pixi
+                exec "$@"
+            )
+            ;;
         conda)
             if [ "$wrap_conda" = "true" ]; then
                 local env
@@ -131,7 +197,25 @@ method_exec() {
                 log_error "docker not found. Install docker or switch runner mode to conda."
                 return 1
             fi
-            docker run --rm -v "$SCRIPT_DIR":/work -w /work -e BENCHMARK_RUNNER_MODE=container "$image" "$@"
+            local docker_args=(--rm -w "$PWD" -e BENCHMARK_RUNNER_MODE=container)
+            if gpu_enabled; then
+                local cuda_image="${image%%:*}-cuda:${image##*:}"
+                if has_cuda_variant "$(method_pixi_env "$method")"; then
+                    image="$cuda_image"
+                fi
+                docker_args+=(--gpus all)
+            fi
+            local mount_dir
+            while IFS= read -r mount_dir; do
+                docker_args+=(-v "$mount_dir:$mount_dir")
+            done < <(container_mount_dirs)
+            # Run as the host user so outputs are owned by them (matters on
+            # Linux); HOME and tool caches go to /tmp since that uid has no
+            # home directory inside the image.
+            docker_args+=(--user "$(id -u):$(id -g)" -e HOME=/tmp
+                          -e MPLCONFIGDIR=/tmp/matplotlib -e NUMBA_CACHE_DIR=/tmp/numba
+                          -e XDG_CACHE_HOME=/tmp/.cache)
+            docker run "${docker_args[@]}" "$image" "$@"
             ;;
         apptainer)
             local image
@@ -144,7 +228,18 @@ method_exec() {
                 log_error "apptainer not found. Install apptainer or switch runner mode to conda."
                 return 1
             fi
-            apptainer exec --bind "$SCRIPT_DIR":/work --env BENCHMARK_RUNNER_MODE=container "$image" "$@"
+            local apptainer_args=(--pwd "$PWD" --env BENCHMARK_RUNNER_MODE=container)
+            if gpu_enabled; then
+                if has_cuda_variant "$(method_pixi_env "$method")"; then
+                    image="${image%%:*}-cuda:${image##*:}"
+                fi
+                apptainer_args+=(--nv)
+            fi
+            local mount_dir
+            while IFS= read -r mount_dir; do
+                apptainer_args+=(--bind "$mount_dir:$mount_dir")
+            done < <(container_mount_dirs)
+            apptainer exec "${apptainer_args[@]}" "$image" "$@"
             ;;
         *)
             log_error "Unsupported runner mode '$mode' for method '$method'."
@@ -157,18 +252,17 @@ method_exec() {
 # Error Handling
 # =============================================================================
 
-# Set trap for cleanup on error
+# Report failures without deleting anything: completed methods keep their
+# outputs and .done markers, and unfinished ones (no .done marker) are simply
+# re-run and overwritten next time (restart_mode=save).
 cleanup() {
     local exit_code=$?
-    if [ $exit_code -ne 0 ]; then
-        log_error "Script failed at line $LINENO. Exit code: $exit_code"
-        # Remove partial results if results_dir is set and exists
-        if [ -n "${results_dir:-}" ] && [ -d "$results_dir" ]; then
-            log_warning "Removing partial results from $results_dir"
-            rm -rf "$results_dir"/*
-        fi
-        exit $exit_code
+    [ -n "${_REGISTRY_CACHE_DIR:-}" ] && rm -rf "${_REGISTRY_CACHE_DIR:?}"
+    # Exit code 3 = some methods failed (already summarised above).
+    if [ $exit_code -ne 0 ] && [ $exit_code -ne 3 ]; then
+        log_error "single_run.sh failed (exit code $exit_code). Completed method outputs in ${results_dir:-<unset>} were kept; methods without a .done marker will be re-run."
     fi
+    exit $exit_code
 }
 
 trap cleanup EXIT
@@ -220,8 +314,12 @@ if [ -n "$EXECUTION_JSON" ]; then
 fi
 
 # Cache enabled methods once and use a compact membership test.
-enabled_methods=$(echo "$run_methods_json" | jq -r 'to_entries[] | select(.value == 1) | .key' | tr '\n' '|')
+# Accepts 1, "1", true and "true" (the encodings allowed by the config schema).
+enabled_methods=$(echo "$run_methods_json" | jq -r 'to_entries[] | select(.value == 1 or .value == true or .value == "1" or .value == "true") | .key' | tr '\n' '|')
 enabled_methods="${enabled_methods%|}"
+if [ -z "$enabled_methods" ]; then
+    log_warning "No method is enabled in run_methods_json: $run_methods_json"
+fi
 
 method_enabled() {
     case "|$enabled_methods|" in
@@ -252,7 +350,7 @@ if [ "$needs_conda" = "1" ]; then
     fi
     log "Validating conda environments..."
     for env in $REQUIRED_CONDA_ENVS; do
-        if ! conda env list 2>/dev/null | grep -q "$env"; then
+        if ! conda env list 2>/dev/null | awk '!/^#/ {print $1}' | grep -qxF "$env"; then
             log_error "Conda environment '$env' not found. Please create it first."
             exit 1
         fi
@@ -313,20 +411,55 @@ EOF
     # ── Save / restart logic ──────────────────────────────────────────
     local data_basename
     data_basename=$(basename "$i" .h5ad)
-    local done_marker="$results_dir_run/$out_subdir/${data_basename}.done"
+    local out_dir="$results_dir_run/$out_subdir"
+    local done_marker="$out_dir/${data_basename}.done"
 
-    if [ "$restart_mode" = "save" ] && [ -f "$done_marker" ]; then
-        log "Skipping $label on $i (.done marker exists)"
-        return 0
-    fi
+    # Everything that determines this result. Stored in the .done marker;
+    # in save mode a result is reused only if the fingerprint still matches.
+    local fp_text fp
+    fp_text=$(printf '%s\n' \
+        "fingerprint_version=1" \
+        "data=$data_basename $current_data_hash" \
+        "splits=$split_fingerprint" \
+        "method=$method_name perturbation_training=$pert_flag" \
+        "entrypoint=$cmd_type|$script|$pass_out|$pass_ko|$supports_perturbation|$method_extra" \
+        "output_mode=$output_mode" \
+        "ko_output_genes=$ko_output_genes")
+    fp=$(printf '%s\n' "$fp_text" | sha256_stdin)
 
-    if [ "$restart_mode" = "rerun" ] && [ -f "$done_marker" ]; then
-        log "Re-running $label on $i (restart_mode=rerun, removing old marker)"
+    if [ -f "$done_marker" ]; then
+        local stored_fp
+        stored_fp=$(sed -n 's/^fingerprint=//p' "$done_marker" | head -n 1)
+        if [ "$restart_mode" = "rerun" ]; then
+            log "Re-running $label on $i (restart_mode=rerun)"
+        elif [ -z "$stored_fp" ]; then
+            log_warning "Skipping $label on $i: legacy .done marker without fingerprint (inputs cannot be checked; use restart_mode=rerun to recompute)"
+            return 0
+        elif [ "$stored_fp" = "$fp" ]; then
+            log "Skipping $label on $i (.done marker matches current inputs and settings)"
+            return 0
+        else
+            log "Inputs or settings changed for $label on $i since the last run; re-running. Changes (< old, > new):"
+            diff <(sed '1d' "$done_marker") <(printf '%s\n' "$fp_text") | grep '^[<>]' || true
+        fi
         rm -f "$done_marker"
     fi
 
+    # Clear this method's previous outputs for this data file only, so that
+    # stale files (or CardamomOT's cached project folder, which would reuse
+    # the old data) cannot survive into the new result.
+    if [ -d "$out_dir" ]; then
+        local stale
+        for stale in "$out_dir/${data_basename}_"* "$out_dir/project_${data_basename}"; do
+            [ -e "$stale" ] || continue
+            rm -rf -- "$stale"
+        done
+    fi
+
+    mkdir -p "$out_dir"
     log "Running $label on $i"
 
+    local method_rc=0
     case "$cmd_type" in
         python)
             local extra_args=()
@@ -335,31 +468,37 @@ EOF
             [ "$supports_perturbation" = "true" ] && extra_args+=(-p "$pert_flag")
             [ -n "$method_extra" ] && extra_args+=($method_extra)
 
-            if ! method_exec "$method_name" python -u "$script" -i "$i" -o "$results_dir_run/$out_subdir/" "${extra_args[@]}" 2>&1; then
-                log_error "$label failed on $i. Check the error output above for details."
-                return 1
-            fi
+            method_exec "$method_name" python -u "$script" -i "$i" -o "$results_dir_run/$out_subdir/" "${extra_args[@]}" 2>&1 || method_rc=$?
             ;;
         bash)
             local extra_args=()
             [ "$pass_out" = "true" ] && extra_args+=("$output_mode")
             [ "$supports_perturbation" = "true" ] && extra_args+=("$pert_flag")
             [ "$pass_ko" = "true" ] && extra_args+=("$ko_output_genes")
+            [ -n "$method_extra" ] && extra_args+=($method_extra)
 
-            if ! method_exec "$method_name" --no-conda-wrap bash "$script" "$i" "$results_dir_run/$out_subdir/" "${extra_args[@]}" 2>&1; then
-                log_error "$label failed on $i. Check the error output above for details."
-                return 1
-            fi
+            method_exec "$method_name" --no-conda-wrap bash "$script" "$i" "$results_dir_run/$out_subdir/" "${extra_args[@]}" 2>&1 || method_rc=$?
             ;;
         *)
             log_error "Unknown command type '$cmd_type' for method '$method_name'."
-            return 1
+            method_rc=1
             ;;
     esac
 
-    # Write .done marker on success
-    mkdir -p "$(dirname "$done_marker")"
-    touch "$done_marker"
+    if [ "$method_rc" -ne 0 ]; then
+        # 130 = interrupted (Ctrl-C): stop the whole run instead of continuing.
+        if [ "$method_rc" -eq 130 ]; then
+            log_error "$label interrupted on $i; stopping."
+            exit 130
+        fi
+        log_error "$label failed on $i (exit code $method_rc). Continuing with the remaining methods; see the error output above."
+        record_failure "$out_subdir" "$i" "$method_rc"
+        return 1
+    fi
+
+    # Write .done marker (with input fingerprint) on success
+    mkdir -p "$out_dir"
+    printf 'fingerprint=%s\n%s\n' "$fp" "$fp_text" > "$done_marker"
     log "$label completed successfully on $i"
     return 0
 }
@@ -369,12 +508,26 @@ run_method() {
     local method_name="$1"
     [ "$(method_enabled "$method_name")" != "1" ] && { log "Skipping $method_name"; return 0; }
 
-    run_method_variant "$method_name" "false" || return 1
+    # Variants are independent: a failure is recorded and the next one runs.
+    run_method_variant "$method_name" "false" || true
 
     if [ "$(method_supports_perturbation "$method_name")" = "1" ] && [ "$perturbation_training" = "true" ]; then
-        run_method_variant "$method_name" "true" "${method_name}_perturbation_training" || return 1
+        run_method_variant "$method_name" "true" "${method_name}_perturbation_training" || true
     fi
     return 0
+}
+
+# ── Failure bookkeeping (continue-on-error) ─────────────────────────────
+# Failed method runs are listed in $failures_file (TSV) so benchmark_run.sh
+# can aggregate them across folds. Exit code 3 = some method runs failed.
+failures_file="$results_dir_run/failed_methods.tsv"
+rm -f "$failures_file"
+n_failures=0
+
+record_failure() {
+    [ -f "$failures_file" ] || printf 'method\tdata_file\texit_code\n' > "$failures_file"
+    printf '%s\t%s\t%s\n' "$1" "$(basename "$2")" "$3" >> "$failures_file"
+    n_failures=$((n_failures + 1))
 }
 
 # =============================================================================
@@ -399,9 +552,21 @@ if [ ${#data_files[@]} -eq 0 ]; then
     exit 0
 fi
 
+# Fingerprint of the train/test split shared by all data files of this run
+# (encodes train_data, future_start_tp, leave-one-out fold, subsampling).
+split_fingerprint=""
+for split_file in train_tps.npy test_tps.npy subsample_train_ids.npy; do
+    if [ -f "$adata_dir/$split_file" ]; then
+        split_fingerprint="$split_fingerprint$split_file:$(sha256_stdin < "$adata_dir/$split_file") "
+    else
+        split_fingerprint="$split_fingerprint$split_file:absent "
+    fi
+done
+
 for i in "${data_files[@]}"; do
     [ -e "$i" ] || continue
     log "Processing data file: $i"
+    current_data_hash=$(sha256_stdin < "$i")
 
     for method in $(_registry_query keys); do
         run_method "$method"
@@ -411,4 +576,9 @@ for i in "${data_files[@]}"; do
 done
 
 log "All data files processed"
+if [ "$n_failures" -gt 0 ]; then
+    log_error "$n_failures method run(s) failed in $results_dir_run (listed in $failures_file):"
+    column -t -s $'\t' "$failures_file" >&2 2>/dev/null || cat "$failures_file" >&2
+    exit 3
+fi
 log "Benchmark run completed successfully"

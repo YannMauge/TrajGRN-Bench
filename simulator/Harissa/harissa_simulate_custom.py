@@ -3,7 +3,7 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from harissa import NetworkModel
-from simulator.common_config import get_benchmark_grn, parse_common_cli, write_shared_files
+from simulator.common_config import clear_previous_outputs, get_benchmark_grn, parse_common_cli, write_shared_files
 
 def _build_base_model(gene_count: int) -> NetworkModel:
     grn = get_benchmark_grn(gene_count)
@@ -30,8 +30,9 @@ def _simulate_dataset(model: NetworkModel, timepoints: np.ndarray, n_cells: int,
 
 def main(argv):
     cfg = parse_common_cli(argv, include_ko=False, default_n_cells=1000, default_n_genes=8)
-    np.random.seed(0)
+    np.random.seed(cfg.seed)
     cfg.output_folder.mkdir(parents=True, exist_ok=True)
+    clear_previous_outputs(cfg.output_folder)
     time = cfg.build_time_vector(total_time=100)
 
     true_dir = cfg.output_folder.parent / "True"
@@ -49,7 +50,8 @@ def main(argv):
     for run_idx in range(cfg.n_runs):
         print(f"Run {run_idx + 1}...")
         run_model = _build_base_model(cfg.n_genes)
-        inter = 1 * (abs(run_model.inter) > 0)
+        # Signed interaction strengths (index 0 = stimulus).
+        inter = np.asarray(run_model.inter, dtype=float)
         np.save(true_dir / f"inter_{run_idx + 1}", inter)
 
         data = _simulate_dataset(run_model, time, cfg.n_cells, cfg.n_genes)

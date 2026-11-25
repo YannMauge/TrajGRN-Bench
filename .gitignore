@@ -8,3 +8,9 @@ simulator/custom_network/Data/*
 *.DS_Store
 site/
 plan.md
+# Local Claude Code settings
+.claude/
+ROADMAP.md
+
+# pixi environments (lock file pixi.lock is tracked)
+.pixi/

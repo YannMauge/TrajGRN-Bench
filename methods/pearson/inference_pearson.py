@@ -1,61 +1,40 @@
-import numpy as np
-import scipy
-import scanpy as sc
-import anndata as ad
-import pandas as pd
-import sys, getopt
+"""Pearson co-expression baseline: grn[i, j] = Pearson correlation of genes
+i and j over the WT training cells (log-normalised; symmetric, so it carries
+no direction). The stimulus column is kept as a variable (log1p of its raw
+value) but not counted in the library size."""
+import getopt
 import os
-
+import sys
 import warnings
-for module in ["scanpy"]:
-    warnings.filterwarnings("ignore", module=module)
+from pathlib import Path
+
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _common import load_training_data, log_normalize_genes, save_grn  # noqa: E402
+
+warnings.filterwarnings("ignore")
+
 
 def main(argv):
-    t_key = 'timepoint'
-    lognorm = 1
-    inputfile = ''
-    outputfolder = ''
-    try:
-        opts, args = getopt.getopt(argv, "hi:o:", ["input=", "outputfolder="])
-    except getopt.GetoptError as err:
-        print(err)
-        sys.exit(2)
+    inputfile, outputfolder = "", ""
+    opts, _ = getopt.getopt(argv, "hi:o:", ["input=", "outputfolder="])
     for opt, arg in opts:
         if opt in ("-i", "--input"):
-            inputfile = '{}'.format(arg)
-        if opt in ("-o", "--outputfolder"):
-            outputfolder = '{}'.format(arg)
+            inputfile = arg
+        elif opt in ("-o", "--outputfolder"):
+            outputfolder = arg
+    if not os.path.exists(inputfile):
+        raise FileNotFoundError(f"Error reading h5ad file: {inputfile}")
 
-    if not os.path.exists(outputfolder):
-        os.makedirs(outputfolder)
+    adata, _, _ = load_training_data(inputfile)
+    x = log_normalize_genes(adata.X, adata.var_names)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        pred = np.corrcoef(x, rowvar=False)
+    pred = np.nan_to_num(pred, nan=0.0)  # constant variables have no correlation
+    path = save_grn(outputfolder, inputfile, pred, adata.var_names)
+    print(f"Pearson GRN saved to {path}")
 
-    data_path = os.path.join(inputfile)
-    if os.path.exists(data_path):
-        adata = ad.read_h5ad(data_path)
-    else:
-        raise FileNotFoundError(
-            "Error reading h5ad file"
-        )
-    if scipy.sparse.issparse(adata.X):
-        adata.X = adata.X.toarray()
-
-    path_data_folder = os.path.dirname(inputfile)
-    train_tps = np.load(path_data_folder+"/train_tps.npy")[:,1]
-    adata = adata[adata.obs[t_key].isin(train_tps)].copy()
-
-    if lognorm:
-        sc.pp.normalize_total(adata)
-        sc.pp.log1p(adata)
-    
-    x = adata.X
-    G = np.size(x, 1)
-    pred = np.zeros((G, G))
-    for i in range(0, G):
-        for j in range(0, G):
-            pred[i, j] = scipy.stats.pearsonr(x[:, i], x[:, j])[0]
-
-    save_path_prefix = os.path.splitext(os.path.basename(inputfile))[0]
-    np.save(outputfolder+save_path_prefix+'_GRN',pred)
 
 if __name__ == "__main__":
-   main(sys.argv[1:])
+    main(sys.argv[1:])

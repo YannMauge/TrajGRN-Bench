@@ -1,56 +1,45 @@
-import numpy as np
-import scipy
-import scanpy as sc
-import anndata as ad
-import pandas as pd
-from GENIE3 import *
-import sys, getopt
-import os
+"""GENIE3 baseline (Huynh-Thu et al. 2010, vendored Python implementation).
 
+Runs on the WT training cells (log-normalised; the stimulus column is a
+variable but not counted in the library size). GENIE3 returns
+VIM[i, j] = importance of gene i for target j (regulator × target), which is
+the benchmark orientation. GENIE3 has no seed argument: numpy's global RNG is
+seeded before the run.
+"""
+import getopt
+import os
+import sys
 import warnings
-for module in ["anndata", "scipy", "torchdiffeq", "scanpy"]:
-    warnings.filterwarnings("ignore", module=module)
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from GENIE3 import GENIE3  # noqa: E402
+from _common import (  # noqa: E402
+    load_training_data, log_normalize_genes, run_on_variable_columns, save_grn, seed_everything,
+)
+
+warnings.filterwarnings("ignore")
+
 
 def main(argv):
-    t_key = 'timepoint'
-    lognorm = 1
-    inputfile = ''
-    outputfolder = ''
-    try:
-        opts, args = getopt.getopt(argv, "hi:o:", ["input=", "outputfolder="])
-    except getopt.GetoptError as err:
-        print(err)
-        sys.exit(2)
+    inputfile, outputfolder = "", ""
+    opts, _ = getopt.getopt(argv, "hi:o:", ["input=", "outputfolder="])
     for opt, arg in opts:
         if opt in ("-i", "--input"):
-            inputfile = '{}'.format(arg)
-        if opt in ("-o", "--outputfolder"):
-            outputfolder = '{}'.format(arg)
+            inputfile = arg
+        elif opt in ("-o", "--outputfolder"):
+            outputfolder = arg
+    if not os.path.exists(inputfile):
+        raise FileNotFoundError(f"Error reading h5ad file: {inputfile}")
 
-    if not os.path.exists(outputfolder):
-        os.makedirs(outputfolder)
+    seed_everything(0)
+    adata, _, _ = load_training_data(inputfile)
+    x = log_normalize_genes(adata.X, adata.var_names)
+    pred = run_on_variable_columns(GENIE3, x)  # constant variables -> 0
+    path = save_grn(outputfolder, inputfile, pred, adata.var_names)
+    print(f"GENIE3 GRN saved to {path}")
 
-    data_path = os.path.join(inputfile)
-    if os.path.exists(data_path):
-        adata = ad.read_h5ad(data_path)
-    else:
-        raise FileNotFoundError(
-            "Error reading h5ad file"
-        )
-    if scipy.sparse.issparse(adata.X):
-        adata.X = adata.X.toarray()
-
-    path_data_folder = os.path.dirname(inputfile)
-    train_tps = np.load(path_data_folder+"/train_tps.npy")[:,1]
-    adata = adata[adata.obs[t_key].isin(train_tps)].copy()
-
-    if lognorm:
-        sc.pp.normalize_total(adata)
-        sc.pp.log1p(adata)
-    
-    pred = GENIE3(adata.X)
-    save_path_prefix = os.path.splitext(os.path.basename(inputfile))[0]
-    np.save(outputfolder+save_path_prefix+'_GRN',pred)
 
 if __name__ == "__main__":
-   main(sys.argv[1:])
+    main(sys.argv[1:])

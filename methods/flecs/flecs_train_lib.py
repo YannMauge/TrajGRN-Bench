@@ -17,11 +17,26 @@ from flecs.sc.utils import compute_cell_knn_paths, train_epoch
 from flecs.trajectory import simulate_deterministic_trajectory
 from flecs.utils import set_seed
 
+import sys  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from _common import load_split, load_training_data, read_dense, save_grn  # noqa: E402
+
 for module in ["anndata", "scipy", "torchdiffeq"]:
     warnings.filterwarnings("ignore", module=module)
 
 
-def deterministic_pred(mycellpop, adata, device, t_start, sim_path_length, n_timepoints, batch_divisor):
+def deterministic_pred(mycellpop, adata, device, t_start, sim_path_length, n_timepoints, batch_divisor,
+                       time_unit=1.0):
+    """Simulate from the cells at t_start.
+
+    FLeCS is trained with one time unit per path step (train_epoch integrates
+    over linspace(0, L-1, L)), i.e. one unit = one interval between consecutive
+    training timepoints. The ODE is therefore integrated over
+    [0, sim_path_length / time_unit] and the outputs are labelled with the real
+    timepoint values t_start .. t_start + sim_path_length.
+    """
     t_key = "timepoint"
     start_adata = adata[adata.obs[t_key] == t_start]
     batch_size = max(1, start_adata.shape[0] // batch_divisor)
@@ -35,7 +50,7 @@ def deterministic_pred(mycellpop, adata, device, t_start, sim_path_length, n_tim
             ).to(device)
             mycellpop.set_visible_state(gene_expr)
             traj = simulate_deterministic_trajectory(
-                mycellpop, torch.linspace(t_start, t_start + sim_path_length, n_timepoints)
+                mycellpop, torch.linspace(0.0, float(sim_path_length) / float(time_unit), n_timepoints)
             )
             traj = traj[:, :, : mycellpop.n_genes, 0]
             all_traj.append(traj)
@@ -236,6 +251,7 @@ def simulate_and_save(
     n_sim,
     sim_adata,
     batch_divisor,
+    time_unit=1.0,
 ):
     t_key = "timepoint"
 
@@ -254,6 +270,7 @@ def simulate_and_save(
             sim_path_length=sim_path_length,
             n_timepoints=n_sim,
             batch_divisor=batch_divisor,
+            time_unit=time_unit,
         )
         pred_data.var_names = adata_train.var_names
         pred_data.obs[t_key] = pred_data.obs["time"]
@@ -270,8 +287,9 @@ def simulate_and_save(
         ad.settings.allow_write_nullable_strings = True
         pred_train_data.write_h5ad(os.path.join(outputfolder, save_path_prefix + output_suffix + "_adata.h5ad"))
 
-    inter_flecs = np.reshape(grn_weights_flat, (n_genes, n_genes, 1))
-    np.save(os.path.join(outputfolder, save_path_prefix + output_suffix + "_GRN"), inter_flecs)
+    # Edges are source-major (flat index = source * n + target): regulator x target
+    inter_flecs = np.reshape(grn_weights_flat, (n_genes, n_genes))
+    save_grn(outputfolder, save_path_prefix + ".h5ad", inter_flecs, adata_train.var_names, suffix=output_suffix)
 
 
 def run_training(
@@ -291,26 +309,18 @@ def run_training(
     if not os.path.exists(inputfile):
         raise FileNotFoundError("Error reading h5ad file")
 
-    adata = ad.read_h5ad(inputfile)
-    if scipy.sparse.issparse(adata.X):
-        adata.X = adata.X.toarray()
-
-    path_data_folder = os.path.dirname(inputfile)
-    train_tps = np.load(os.path.join(path_data_folder, "train_tps.npy"))
-    test_tps = np.load(os.path.join(path_data_folder, "test_tps.npy"))
-
-    adata_train = adata[adata.obs[t_key].isin(train_tps[:, 1]), :].copy()
-    if len(np.unique(adata_train.obs["dataset_id"])) > 1:
-        adata_train = adata_train[adata_train.obs["dataset_id"] == "WT"].copy()
+    adata = read_dense(inputfile)
+    # WT cells at training timepoints (FLeCS does not use perturbation data),
+    # subsampled on the original obs_names *before* any re-indexing.
+    adata_train, train_tps, test_tps = load_training_data(inputfile, perturbation_training=False)
+    _, _, subsample_ids = load_split(inputfile)
+    is_wt = (
+        (adata.obs["dataset_id"].astype(str) == "WT").to_numpy()
+        if "dataset_id" in adata.obs.columns else np.ones(adata.n_obs, dtype=bool)
+    )
 
     if path_strategy == "force_timepoints":
         adata_train.obs.reset_index(inplace=True)
-
-    subsample_ids_path = os.path.join(path_data_folder, "subsample_train_ids.npy")
-    subsample_ids = None
-    if os.path.exists(subsample_ids_path):
-        subsample_ids = np.load(subsample_ids_path, allow_pickle=True)
-        adata_train = adata_train[adata_train.obs_names.isin(subsample_ids)].copy()
 
     start_runtime = time.time()
 
@@ -342,8 +352,13 @@ def run_training(
     if output_mode != "no_traj":
         t_start, _, n_sim, sim_path_length = compute_simulation_parameters(output_mode, train_tps, test_tps)
         if subsample_ids is not None and t_start == train_tps[:, 1][0]:
-            sim_adata = adata[~adata.obs_names.isin(subsample_ids)].copy()
+            # start cells: held-out (non-subsampled) WT cells
+            held_out = ~adata.obs_names.isin(np.asarray(subsample_ids).astype(str))
+            sim_adata = adata[held_out & is_wt].copy()
 
+    # One FLeCS time unit = one interval between consecutive training timepoints
+    train_steps = np.diff(np.sort(train_tps[:, 1].astype(float)))
+    time_unit = float(np.median(train_steps)) if len(train_steps) else 1.0
     original_weights = mycellpop["gene", "regulates", "gene"].simple_conv_weights.data[0, :, 0].cpu().numpy().copy()
 
     simulate_and_save(
@@ -363,12 +378,15 @@ def run_training(
         n_sim=n_sim,
         sim_adata=sim_adata,
         batch_divisor=batch_divisor,
+        time_unit=time_unit,
     )
 
     for ko_gene in ko_targets:
         ko_idx = list(adata_train.var_names).index(ko_gene)
         ko_weights = original_weights.copy()
-        ko_weights[ko_idx::n_genes] = 0
+        # Upstream FLeCS KO (CrisprIntervention) removes the gene's OUTGOING
+        # edges; edges are source-major (flat index = source * n + target).
+        ko_weights[ko_idx * n_genes:(ko_idx + 1) * n_genes] = 0
         simulate_and_save(
             mycellpop=mycellpop,
             adata=adata,
@@ -386,6 +404,7 @@ def run_training(
             n_sim=n_sim,
             sim_adata=sim_adata,
             batch_divisor=batch_divisor,
+            time_unit=time_unit,
         )
 
     with torch.no_grad():

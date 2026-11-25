@@ -7,8 +7,8 @@ on benchmark run outputs.
 
 Modules:
     _common         Shared constants, regex patterns, and utilities.
-    metrics_grn     GRN evaluation metrics (precision, recall, F1, AUPRC, …).
-    metrics_cells   Cell-population metrics (Wasserstein, KL, JS, ARI, …).
+    metrics_grn     Threshold-free GRN metrics (edge / signed AUPRC, AUROC, …).
+    metrics_cells   Per-timepoint cell metrics (Wasserstein, JS, mean expr., gene corr.).
     visualizations  Plotting functions (GRN heatmaps, cell UMAPs, metrics charts).
     compute_metrics Orchestrator that runs metrics + visualizations for a full run.
 """
@@ -26,9 +26,9 @@ from ._common import (
 )
 from .metrics_cells import (
     CellMetricsError,
+    align_genes,
     compute_cell_metrics,
-    compute_wasserstein,
-    load_adata,
+    load_expression,
     read_adata,
 )
 from .metrics_grn import (
@@ -56,9 +56,9 @@ __all__ = [
     "setup_logging",
     # metrics_cells
     "CellMetricsError",
+    "align_genes",
     "compute_cell_metrics",
-    "compute_wasserstein",
-    "load_adata",
+    "load_expression",
     "read_adata",
     # metrics_grn
     "GRNMetricsError",

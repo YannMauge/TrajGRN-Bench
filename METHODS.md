@@ -36,6 +36,11 @@
   - Paper: PLoS ONE (2010) DOI: [10.1371/journal.pone.0012776](https://doi.org/10.1371/journal.pone.0012776)
   - Description: Tree-ensemble regression approach (Random Forests) for gene regulatory network inference from expression data; widely used baseline for GRN reconstruction.
 
+- **dynGENIE3**
+  - GitHub: https://github.com/vahuynh/dynGENIE3
+  - Paper: Scientific Reports (2018) DOI: [10.1038/s41598-018-21715-0](https://doi.org/10.1038/s41598-018-21715-0)
+  - Description: Semi-parametric approach for GRN inference from time-series expression data; extends GENIE3 by incorporating temporal information via finite-difference approximation of expression derivatives. Uses Random Forests or Extra-Trees.
+
 - **Pearson (coexpression baseline)**
   - Local script: `methods/pearson/inference_pearson.py`
   - Citation: /

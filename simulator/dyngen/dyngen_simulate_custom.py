@@ -13,13 +13,13 @@ Supports both regular (WT-only) and KO simulation modes via --ko_genes.
 
 Usage (WT only):
     python dyngen_simulate_custom.py -o <output_folder> [-a <adata_folder>]
-        [-n <n_runs>] [--n_genes 8] [--n_cells 1000] [--n_time_bins 20]
-        [--seed 42]
+        [-n <n_runs>] [--n_genes 8] [--n_cells 1000] [--n_time_bins 10]
+        [--seed 0]
 
 Usage (KO mode):
     python dyngen_simulate_custom.py -o <output_folder> -k <all|Gene0,Gene1,...>
-        [-n <n_runs>] [--n_genes 8] [--n_cells 1000] [--n_time_bins 20]
-        [--seed 42]
+        [-n <n_runs>] [--n_genes 8] [--n_cells 1000] [--n_time_bins 10]
+        [--seed 0]
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from simulator.common_config import (
     SimulatorCommonConfig,
+    clear_previous_outputs,
     build_dyngen_backbone_spec,
     get_benchmark_grn,
 )
@@ -85,8 +86,8 @@ def parse_cli(argv: Sequence[str]) -> DyngenRunConfig:
     ko_genes = "none"
     n_genes = 8
     n_cells = 1000
-    n_time_bins = 20
-    seed = 42
+    n_time_bins = 10
+    seed = 0
 
     opts, _ = getopt.getopt(
         list(argv),
@@ -135,8 +136,8 @@ def _write_ground_truth(cfg: DyngenRunConfig) -> None:
     """Write the benchmark GRN as ground-truth .npy files in the True/ directory.
 
     Uses the GRN defined in common_config.py (same as Harissa/SERGIO/BoolODE).
-    Saves a binary (n_genes+1)×(n_genes+1) adjacency matrix per run, where
-    index 0 is the stimulus.
+    Saves the signed (n_genes+1)×(n_genes+1) interaction-strength matrix per
+    run, where index 0 is the stimulus.
     """
     try:
         grn = get_benchmark_grn(cfg.n_genes)
@@ -183,15 +184,42 @@ def _run_rscript(cfg: DyngenRunConfig) -> None:
         sys.exit(result.returncode)
 
 
+def _relabel_timepoints(cfg: DyngenRunConfig) -> None:
+    """Map dyngen's time-bin values (bin centres, e.g. 5, 15, …, 95) onto the
+    timepoint labels shared by all simulators (0, 10, …, 90) by rank, and set
+    the stimulus row to 100 for t > 0, as in the other simulators."""
+    labels = cfg.common.time_labels()
+    for path in sorted(cfg.output_folder.glob("data_*.txt")):
+        data = np.loadtxt(path, delimiter="\t")
+        times = data[0, 1:]
+        uniq = np.unique(times)
+        if len(uniq) > len(labels):
+            raise ValueError(f"{path.name}: {len(uniq)} time bins, expected <= {len(labels)}")
+        mapping = {v: labels[i] for i, v in enumerate(uniq)}
+        new_times = np.array([mapping[v] for v in times])
+        data[0, 1:] = new_times
+        data[1, 1:] = 100 * (new_times > 0)
+        np.savetxt(path, data, fmt="%d", delimiter="\t")
+
+
 def main(argv: Sequence[str]) -> None:
     cfg = parse_cli(argv)
     cfg.output_folder.mkdir(parents=True, exist_ok=True)
+    clear_previous_outputs(cfg.output_folder)
 
     # Write ground truth GRN from benchmark config (shared across all simulators)
     _write_ground_truth(cfg)
 
     # Run the dyngen R pipeline (handles both WT and KO internally)
     _run_rscript(cfg)
+    _relabel_timepoints(cfg)
+    # dyngen samples kinetics per dyngen gene, but its time bins are quantiles
+    # of a progression score (not simulation time) and each benchmark gene
+    # averages several dyngen genes: no degradation rate is defined in
+    # timepoint units, so drop the placeholder file written by the R script.
+    rates_file = cfg.output_folder / "Rates" / "degradation_rates.txt"
+    if rates_file.exists():
+        rates_file.unlink()
 
     mode = "KO" if cfg.ko_genes.lower() not in ("", "none") else "WT-only"
     print(f"[dyngen] {mode} simulation completed successfully.")

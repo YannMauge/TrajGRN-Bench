@@ -34,6 +34,8 @@ import argparse
 import json
 import logging
 import os
+import re
+import shutil
 import subprocess
 import sys
 
@@ -66,6 +68,11 @@ def parse_bool_arg(value: str) -> bool:
     )
 
 
+# Exit code used by single_run.sh (and propagated by this script and
+# benchmark_run.sh) when the run completed but some method runs failed.
+SINGLE_RUN_PARTIAL_FAILURE = 3
+
+
 class BenchmarkRunnerError(Exception):
     """Custom exception for BenchmarkRunner errors."""
 
@@ -91,12 +98,15 @@ class BenchmarkRunner:
         self.results_dir: Optional[str] = None
         self.run_methods_json: Optional[str] = None
         self.future_start_tp: Optional[int] = None
-        self.perturbation_training: bool = True
+        self.perturbation_training: bool = False
         self.restart_mode: str = "save"
         self.ko_output_genes: str = "none"
+        self.train_ko_genes: str = "all"
         self.adata: Optional[ad.AnnData] = None
         self.unique_tps: Optional[np.ndarray] = None
         self.n_timepoints: int = 0
+        # Results directories in which at least one method run failed.
+        self.partial_failure_dirs: List[str] = []
 
     # -------------------------------------------------------------------------
     # Argument parsing
@@ -154,9 +164,16 @@ class BenchmarkRunner:
             help='KO targets for output simulation ("none", "all", or comma-separated gene names)',
         )
         parser.add_argument(
+            "--train_ko_genes",
+            default="all",
+            help='Perturbation groups (obs["dataset_id"]) given to methods for training: '
+                 '"all" (default), "none", or comma-separated names. Other KO groups are '
+                 'held out from the method inputs (kept only as ground truth).',
+        )
+        parser.add_argument(
             "--perturbation_training",
             type=parse_bool_arg,
-            default=True,
+            default=False,
             help="Whether to run perturbation-training variants of supported methods (default: true)",
         )
         parser.add_argument(
@@ -182,6 +199,7 @@ class BenchmarkRunner:
         self.restart_mode = args.restart_mode
         self.perturbation_training = args.perturbation_training
         self.ko_output_genes = str(args.ko_output_genes)
+        self.train_ko_genes = str(args.train_ko_genes)
         if args.ko_genes is not None:
             if self.ko_output_genes == "none":
                 logger.warning("--ko_genes is deprecated; use --ko_output_genes instead")
@@ -252,10 +270,11 @@ class BenchmarkRunner:
         Future mode: train on timepoints before future_start_tp,
         test on timepoints from future_start_tp onward.
         """
-        if self.future_start_tp >= self.n_timepoints:
+        if not 2 <= self.future_start_tp < self.n_timepoints:
             raise BenchmarkRunnerError(
-                f"future_start_tp ({self.future_start_tp}) must be less than "
-                f"n_timepoints ({self.n_timepoints})"
+                f"future_start_tp is the index of the first test timepoint and must be in "
+                f"[2, {self.n_timepoints - 1}] (>= 2 training timepoints, >= 1 test "
+                f"timepoint); got {self.future_start_tp}"
             )
         train_idx = np.arange(self.future_start_tp)
         test_idx = np.arange(self.future_start_tp, self.n_timepoints)
@@ -287,19 +306,19 @@ class BenchmarkRunner:
 
     def _splits_subsample_full(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Subsample-full mode: train on all timepoints using only 66% of cells
-        at each timepoint. The first timepoint (t0) is included in the test set
-        so that full-trajectory simulations can be evaluated against the complete
-        t0 population.
+        Subsample-full mode: methods train on 66% of the cells of every
+        timepoint (subsample_train_ids.npy) and simulate from the held-out t0
+        cells; predictions are evaluated against the held-out 34% of cells at
+        every timepoint after t0 (the test timepoints).
         """
-        if self.n_timepoints <= 0:
+        if self.n_timepoints < 2:
             raise BenchmarkRunnerError(
-                f"n_timepoints must be positive, got {self.n_timepoints}"
+                f"subsample_full needs >= 2 timepoints, got {self.n_timepoints}"
             )
         train_idx = np.arange(self.n_timepoints)
         train_tps = np.column_stack((train_idx, self.unique_tps[train_idx]))
-        # t0 is kept as the test reference for simulation evaluation
-        test_tps = np.column_stack(([0], [self.unique_tps[0]]))
+        test_idx = np.arange(1, self.n_timepoints)
+        test_tps = np.column_stack((test_idx, self.unique_tps[test_idx]))
         logger.info(
             f"Subsample-full splits: train={train_tps.shape}, test={test_tps.shape}"
         )
@@ -371,6 +390,7 @@ class BenchmarkRunner:
     def execute_single_run(
         self,
         results_dir_run: str,
+        inputs_dir: str,
         ko_output_genes: str = "none",
     ) -> None:
         """
@@ -383,7 +403,7 @@ class BenchmarkRunner:
         command = [
             "bash",
             "./single_run.sh",
-            self.adata_dir,
+            inputs_dir,
             results_dir_run,
             self.run_methods_json,
             self.output_mode,
@@ -396,34 +416,59 @@ class BenchmarkRunner:
 
         if not os.environ.get("BENCHMARK_EXECUTION_JSON"):
             logger.warning(
-                "BENCHMARK_EXECUTION_JSON is not set; methods will use default conda env fallbacks"
+                "BENCHMARK_EXECUTION_JSON is not set; each method uses the runner, conda env and image defined in methods_registry.yaml"
             )
 
         try:
-            subprocess.run(command, check=True, env=os.environ.copy())
+            result = subprocess.run(command, env=os.environ.copy())
         except KeyboardInterrupt:
             raise BenchmarkRunnerError("Interrupted by user")
-        except BenchmarkRunnerError:
-            raise
         except Exception as e:
             raise BenchmarkRunnerError(f"Failed to execute single_run.sh: {e}")
+
+        if result.returncode == SINGLE_RUN_PARTIAL_FAILURE:
+            # Some methods failed; single_run.sh listed them in
+            # failed_methods.tsv. Keep going (other folds, metrics).
+            self.partial_failure_dirs.append(results_dir_run)
+            logger.warning(
+                f"Some methods failed in {results_dir_run}; continuing "
+                "(see failed_methods.tsv there)"
+            )
+        elif result.returncode != 0:
+            raise BenchmarkRunnerError(
+                f"single_run.sh failed with exit code {result.returncode}"
+            )
 
     # -------------------------------------------------------------------------
     # Train-data runners
     # -------------------------------------------------------------------------
 
+    def _run_split(
+        self,
+        suffix: str,
+        train_tps: np.ndarray,
+        test_tps: np.ndarray,
+        subsample: bool = False,
+    ) -> None:
+        """Run all methods on one train/test split.
+
+        The split (and subsample IDs) is saved in the run folder (read by the
+        metrics) and in the run's ``inputs/`` folder, which is what methods
+        read: its data files contain WT + training perturbations only.
+        """
+        results_dir_run = self.create_results_directory(suffix)
+        self.save_timepoints(train_tps, test_tps, results_dir_run)
+        if subsample:
+            self.save_subsample_ids(results_dir_run)
+        inputs_dir = self.prepare_inputs(results_dir_run, train_tps, test_tps, subsample)
+        self.execute_single_run(
+            results_dir_run, inputs_dir, ko_output_genes=self.ko_output_genes,
+        )
+
     def run_full(self) -> None:
         """Execute benchmark with all timepoints as training data."""
-        train_tps, test_tps = self._splits_full()
-        self.save_timepoints(train_tps, test_tps)
-        suffix = f"_full_{self.output_mode}"
-        results_dir_run = self.create_results_directory(suffix)
-        self.execute_single_run(
-            results_dir_run,
-            ko_output_genes=self.ko_output_genes,
-        )
-        self.save_timepoints(train_tps, test_tps, results_dir_run)
-        logger.info("Full training analysis completed successfully")
+        self._run_split(f"_full_{self.output_mode}", *self._splits_full())
+        logger.info("Full training analysis finished")
 
     def run_future(self) -> None:
         """Execute benchmark with future prediction training split."""
@@ -431,16 +476,8 @@ class BenchmarkRunner:
             raise BenchmarkRunnerError(
                 "future_start_tp is required for train_data=future"
             )
-        train_tps, test_tps = self._splits_future()
-        self.save_timepoints(train_tps, test_tps)
-        suffix = f"_future_{self.output_mode}"
-        results_dir_run = self.create_results_directory(suffix)
-        self.execute_single_run(
-            results_dir_run,
-            ko_output_genes=self.ko_output_genes,
-        )
-        self.save_timepoints(train_tps, test_tps, results_dir_run)
-        logger.info("Future prediction analysis completed successfully")
+        self._run_split(f"_future_{self.output_mode}", *self._splits_future())
+        logger.info("Future prediction analysis finished")
 
     def run_leave_one_out(self) -> None:
         """
@@ -450,42 +487,135 @@ class BenchmarkRunner:
         each one out as the test set in turn.
         """
         for i in range(1, self.n_timepoints - 1):
-            train_tps, test_tps = self._splits_leave_one_out(i)
-            self.save_timepoints(train_tps, test_tps)
-            suffix = f"_leave-one-out_{self.output_mode}/run_{i}"
-            results_dir_run = self.create_results_directory(suffix)
-            self.execute_single_run(
-                results_dir_run,
-                ko_output_genes=self.ko_output_genes,
+            self._run_split(
+                f"_leave-one-out_{self.output_mode}/run_{i}",
+                *self._splits_leave_one_out(i),
             )
-        logger.info("Leave-one-out analysis completed successfully")
+        logger.info("Leave-one-out analysis finished")
 
     def run_subsample_full(self) -> None:
         """
         Execute benchmark with all timepoints but only 66% of cells per timepoint
         as training data.
         """
-        train_tps, test_tps = self._splits_subsample_full()
-        self.save_timepoints(train_tps, test_tps)
-        self.save_subsample_ids()
-        suffix = f"_subsample_full_{self.output_mode}"
-        results_dir_run = self.create_results_directory(suffix)
-        self.execute_single_run(
-            results_dir_run,
-            ko_output_genes=self.ko_output_genes,
+        self._run_split(
+            f"_subsample_full_{self.output_mode}", *self._splits_subsample_full(), subsample=True,
         )
-        self.save_timepoints(train_tps, test_tps, results_dir_run)
-        self.save_subsample_ids(results_dir_run)
-        logger.info("Subsample-full analysis completed successfully")
+        logger.info("Subsample-full analysis finished")
+
+    # -------------------------------------------------------------------------
+    # Per-run method inputs (WT + training perturbations)
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_gene_list(value: str) -> Optional[set]:
+        """None for "all", empty set for "none", else the listed names."""
+        v = (value or "none").strip()
+        if v.lower() == "all":
+            return None
+        if v.lower() in ("", "none"):
+            return set()
+        return {g.strip() for g in v.split(",") if g.strip()}
+
+    def training_groups(self, groups: set) -> set:
+        """dataset_id groups given to methods: WT + selected training KOs."""
+        selected = self._parse_gene_list(self.train_ko_genes)
+        if selected is None:
+            return set(groups)
+        return {g for g in groups if g == "WT" or g in selected}
+
+    def prepare_inputs(
+        self,
+        results_dir_run: str,
+        train_tps: np.ndarray,
+        test_tps: np.ndarray,
+        subsample: bool = False,
+    ) -> str:
+        """Write ``<results_dir_run>/inputs/``: the data files methods read
+        (held-out perturbation groups removed), the split files and the
+        auxiliary ``halflife/`` folder. The folder is rebuilt on every run."""
+        inputs_dir = os.path.join(results_dir_run, "inputs")
+        if os.path.isdir(inputs_dir):
+            shutil.rmtree(inputs_dir)
+        os.makedirs(inputs_dir)
+        self.save_timepoints(train_tps, test_tps, inputs_dir)
+        if subsample:
+            self.save_subsample_ids(inputs_dir)
+        halflife = os.path.join(self.adata_dir, "halflife")
+        if os.path.isdir(halflife):
+            shutil.copytree(halflife, os.path.join(inputs_dir, "halflife"))
+
+        for name in sorted(os.listdir(self.adata_dir)):
+            if not re.match(r"^data_\d+\.h5ad$", name):
+                continue
+            src, dst = os.path.join(self.adata_dir, name), os.path.join(inputs_dir, name)
+            adata = ad.read_h5ad(src)
+            if "dataset_id" not in adata.obs.columns:
+                shutil.copy2(src, dst)
+                continue
+            groups = {str(g) for g in adata.obs["dataset_id"].dropna().unique()}
+            keep = self.training_groups(groups)
+            held_out = sorted(groups - keep)
+            if not held_out:
+                shutil.copy2(src, dst)  # byte-identical copy (stable fingerprint)
+                continue
+            logger.info(f"{name}: held out from method inputs (ground truth only): {held_out}")
+            adata[adata.obs["dataset_id"].astype(str).isin(keep)].copy().write_h5ad(dst)
+        logger.info(f"Method inputs written to {inputs_dir}")
+        return inputs_dir
 
     # -------------------------------------------------------------------------
     # Main entry point
     # -------------------------------------------------------------------------
 
+    def warn_ko_overlap(self) -> None:
+        """Warn when a KO to predict (ko_output_genes) is also present in the
+        training data: perturbation-training variants then see that KO's
+        cells, so predicting it is not an unseen perturbation."""
+        value = (self.ko_output_genes or "none").strip()
+        if value.lower() in ("", "none") or "dataset_id" not in self.adata.obs.columns:
+            return
+        groups = {str(g) for g in self.adata.obs["dataset_id"].dropna().unique()}
+        train_kos = self.training_groups(groups) - {"WT"}
+        if not train_kos:
+            return
+        if value.lower() == "all":
+            targets = {str(g) for g in self.adata.var_names}
+        else:
+            targets = {g.strip() for g in value.split(",") if g.strip()}
+        overlap = sorted(train_kos & targets)
+        if overlap:
+            logger.warning(
+                "KO genes %s are both in the training data and in ko_output_genes: "
+                "perturbation-training variants are trained on these KOs, so their "
+                "predictions are not for unseen perturbations.",
+                overlap,
+            )
+
+    def validate_split_settings(self) -> None:
+        """Reject train_data / output_mode combinations that cannot work."""
+        if self.train_data == "leave-one-out" and self.n_timepoints < 3:
+            raise BenchmarkRunnerError(
+                f"leave-one-out needs >= 3 timepoints (an intermediate one to hold out); "
+                f"got {self.n_timepoints}"
+            )
+        if self.train_data == "subsample_full" and self.output_mode == "full_test":
+            raise BenchmarkRunnerError(
+                "train_data=subsample_full simulates from the held-out t0 cells: use "
+                "output_mode full_full (or full_train); held-out cells are evaluated at "
+                "every timepoint after t0"
+            )
+        if self.train_data == "full" and self.output_mode == "full_test":
+            raise BenchmarkRunnerError(
+                "train_data=full has no test timepoints: use output_mode full_train or "
+                "full_full (cell metrics then use the training timepoints except t0)"
+            )
+
     def run(self) -> None:
         """Dispatch to the appropriate train-data runner after shared setup."""
         self.load_adata()
         self.get_timepoints()
+        self.validate_split_settings()
         if self.perturbation_training:
             if "dataset_id" not in self.adata.obs.columns:
                 raise BenchmarkRunnerError(
@@ -499,13 +629,7 @@ class BenchmarkRunner:
                     f"found {n_groups}: {groups}"
                 )
 
-        # Clean up any stale subsample_train_ids.npy from a previous run so
-        # that methods only apply subsampling when it was explicitly requested.
-        # The file is recreated below by run_subsample_full() when needed.
-        subsample_ids_path = os.path.join(self.adata_dir, "subsample_train_ids.npy")
-        if os.path.exists(subsample_ids_path):
-            os.remove(subsample_ids_path)
-            logger.info(f"Removed stale subsample_train_ids.npy from {self.adata_dir}")
+        self.warn_ko_overlap()
 
         dispatch = {
             "full": self.run_full,
@@ -522,6 +646,12 @@ def main(argv: List[str]) -> None:
         runner = BenchmarkRunner()
         runner.parse_arguments(argv)
         runner.run()
+        if runner.partial_failure_dirs:
+            logger.error(
+                "Benchmark finished, but some method runs failed in: "
+                + ", ".join(runner.partial_failure_dirs)
+            )
+            sys.exit(SINGLE_RUN_PARTIAL_FAILURE)
     except BenchmarkRunnerError as e:
         logger.error(str(e))
         sys.exit(1)

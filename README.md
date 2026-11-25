@@ -6,7 +6,7 @@
 
 - **Standardized metrics** — Unified metrics for GRN inference (AUROC, AUPRC, etc.) and trajectory reconstruction (Wasserstein, EMD, etc.).
 - **Flexible configuration** — A single YAML config drives methods, datasets, metrics, and output layout.
-- **Docker-based execution** — Each method runs in its own container for reproducible, conflict-free runs.
+- **Reproducible environments** — pixi-locked environments (Linux x86-64/ARM64, macOS Apple Silicon) and one Docker image per method group, with CUDA variants.
 - **Interactive rankings** — Auto-generated ranking tables and plots for exploring method performance.
 
 ## Documentation
@@ -32,11 +32,12 @@ Full documentation is available at the [TrajGRN-Bench docs site](https://yannmau
 ## Quick Start
 
 ```bash
-# 1. Create the runner environment
-conda env create -f environments/benchmark_runner.yml
+# 1. Install pixi (https://pixi.sh) and the runner environment
+pixi install -e runner
+pixi run -e runner install-dyngen   # only for the dyngen simulator
 
-# 2. Build method Docker images
-make -f containers/Makefile -j4 all
+# 2. Build method Docker images (from pixi.toml / pixi.lock)
+make -f containers/Makefile all
 
 # 3. Run the benchmark
 bash benchmark_run.sh --config configs/benchmark.example.yaml
@@ -44,7 +45,7 @@ bash benchmark_run.sh --config configs/benchmark.example.yaml
 
 Outputs are written to `benchmark/outputs_methods/` and `benchmark/outputs_metrics/`.
 
-> See the [Installation guide](https://yannmauge.github.io/TrajGRN-Bench/install/) for detailed setup instructions, including optional conda-based execution.
+> See the [Installation guide](https://yannmauge.github.io/TrajGRN-Bench/install/) for detailed setup instructions (platforms: Linux x86-64/ARM64, macOS Apple Silicon; GPU images for CUDA 12).
 
 ## Methods Included
 
@@ -57,6 +58,7 @@ Outputs are written to `benchmark/outputs_methods/` and `benchmark/outputs_metri
 | scNODE | Trajectory (VAE+NeuralODE) | [bioRxiv 2023](https://doi.org/10.1101/2023.11.22.568346) |
 | TrajectoryNet | Trajectory (CNF/OT) | [ICML 2020](https://arxiv.org/abs/2002.04461) |
 | GENIE3 | GRN (baseline) | [PLoS ONE 2010](https://doi.org/10.1371/journal.pone.0012776) |
+| dynGENIE3 | GRN (time-series baseline) | [Sci Rep 2018](https://doi.org/10.1038/s41598-018-21715-0) |
 | Pearson | GRN (baseline) | Coexpression baseline |
 | Waddington-OT | Trajectory (OT) | [Cell 2019](https://doi.org/10.1016/j.cell.2019.01.006) |
 
@@ -72,9 +74,9 @@ See the [Methods Overview](https://yannmauge.github.io/TrajGRN-Bench/methods/) o
 ├── ranking_table.py              # Method ranking generation
 ├── configs/                      # YAML config files and JSON schema
 ├── containers/                   # Docker/Apptainer build recipes
-├── environments/                 # Conda environment YAMLs
+├── pixi.toml / pixi.lock          # Locked environments (runner + one per method group)
 ├── methods/                      # Per-method inference scripts
-├── simulator/                    # Simulation drivers (SERGIO, Harissa, BoolODE)
+├── simulator/                    # Simulation drivers (Harissa, BoolODE, SERGIO, dyngen)
 ├── post_analysis/                # Metrics computation and visualizations
 ├── utils/                        # Shared utilities and registry
 ├── docs/                         # Documentation (MkDocs Material site)
